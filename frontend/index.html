@@ -29,6 +29,9 @@
     .toggle-group { display:flex; gap:8px; justify-content:center; margin-bottom:12px }
     .toggle-btn { padding:8px 12px; border-radius:8px; border:1px solid #e5e7eb; cursor:pointer; background:#fff }
     .toggle-btn.active { background:#2563eb; color:#fff; border-color:#1e40af }
+    /* small spinner used when waiting for data after changing date */
+    .spinner { border:3px solid #f3f4f6; border-top:3px solid #2563eb; border-radius:50%; width:18px; height:18px; animation:spin 1s linear infinite; display:inline-block }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -58,7 +61,12 @@
 
     <div class="grid">
       <div class="card" v-for="panel in visiblePanels" :key="panel.key">
-        <h2>{{ panel.title }}</h2>
+        <h2 style="display:flex; align-items:center; justify-content:space-between">
+          <span>{{ panel.title }}</span>
+          <span style="margin-left:12px">
+            <span v-if="panels[panel.key].loading" class="spinner" title="waiting for data"></span>
+          </span>
+        </h2>
         <div class="meta">Endpoint: <code>{{ panel.path }}</code></div>
 
         <div class="controls">
@@ -126,10 +134,10 @@
         ];
 
         const panels = reactive({
-          kelmarsh_all_data: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default' },
-          kelmarsh_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default' },
-          penmanshiel_data: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default' },
-          penmanshiel_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default' }
+          kelmarsh_all_data: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false },
+          kelmarsh_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false },
+          penmanshiel_data: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false },
+          penmanshiel_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false }
         });
 
         // per-panel-type selected start dates (YYYY-MM-DD) — null means no filtering
@@ -146,7 +154,7 @@
         }
 
         function applyDate(site, type) {
-          // clear current displayed values for panels of this site+type — subsequent incoming SSE that match the date will populate
+          // clear current displayed values for panels of this site+type so the UI resets to the new date
           panelList.forEach(p => {
             const isSite = p.key.startsWith(site);
             const isType = (type === 'status') ? p.key.includes('status') : !p.key.includes('status');
@@ -159,6 +167,22 @@
               s.windSpeed = null;
               s.windDir = null;
               s.nacelleDir = null;
+              s.statusValue = null;
+              s.statusClass = 'badge-default';
+              // show spinner for data panels while waiting for the first matching record
+              if (type === 'data') s.loading = true;
+            }
+          });
+          // set the filter date for the site+type and reconnect with since_ms so the server can stream from that date
+          const key = `${site}_${type}`;
+          const dateVal = siteDates[key];
+          const sinceMs = dateVal ? new Date(dateVal + 'T00:00:00').getTime() : null;
+          // reconnect affected panels with optional since_ms
+          panelList.forEach(p => {
+            const isSite = p.key.startsWith(site);
+            const isType = (type === 'status') ? p.key.includes('status') : !p.key.includes('status');
+            if (isSite && isType) {
+              try { createConnection(p.key, p.path, panels[p.key].waitSeconds, sinceMs); } catch(_){ }
             }
           });
         }
@@ -166,7 +190,14 @@
         function clearDate(site, type) {
           const key = `${site}_${type}`;
           siteDates[key] = null;
-          applyDate(site, type);
+          // reconnect affected panels without since param so they stream normally; do not call applyDate (which would reconnect again)
+          panelList.forEach(p => {
+            const isSite = p.key.startsWith(site);
+            const isType = (type === 'status') ? p.key.includes('status') : !p.key.includes('status');
+            if (isSite && isType) {
+              try { createConnection(p.key, p.path, panels[p.key].waitSeconds, null); } catch(_){ }
+            }
+          });
         }
 
         // activeSite controls which group's panels are visible: 'kelmarsh' or 'penmanshiel'
@@ -190,7 +221,7 @@
           const base = (location.origin === 'null' ? 'http://127.0.0.1:8000' : location.origin);
           const u = new URL(path, base);
           if (waitSeconds !== undefined && waitSeconds !== null) u.searchParams.set('wait_seconds', String(waitSeconds));
-          return u.toString();
+          return u; // return URL object so callers can append additional params like since_ms
         }
 
         function extractFields(record) {
@@ -271,6 +302,11 @@
                 }
                 // if recTs is null, we cannot determine time — accept the record to avoid hiding everything
               }
+               // if server sent a non-record control message (e.g., end_of_data), stop loading
+               if (obj.info) {
+                 try { panels[panelKey].loading = false; } catch(_){}
+                 return;
+               }
                const rec = obj.record;
                panels[panelKey].lastRowid = obj.rowid || panels[panelKey].lastRowid;
                // For status panels show all parameters; for data panels keep compact display
@@ -332,19 +368,27 @@
                // nacelle
                const nacKey = panels[panelKey].display.find(x => x[0].toLowerCase().includes('nacelle'));
                panels[panelKey].nacelleDir = nacKey ? Math.round(parseFloat(String(nacKey[1]).replace(/[^0-9.+-eE]/g,''))) : null;
+               // hide spinner once we have a record applied
+               try { panels[panelKey].loading = false; } catch(_){}
              }
            } catch (err) { console.error('SSE parse error', err); }
          }
 
          function createConnection(panelKey, path, waitSeconds) {
+          // signature: createConnection(panelKey, path, waitSeconds, sinceMs)
           try { if (panels[panelKey].es) panels[panelKey].es.close(); } catch(_){ }
           const ws = (waitSeconds !== undefined ? waitSeconds : panels[panelKey].waitSeconds);
+          // allow optional sinceMs as last argument on the call
+          const sinceMs = arguments.length >= 4 ? arguments[3] : null;
           const url = buildUrl(path, ws);
-           panels[panelKey].es = new EventSource(url);
-           panels[panelKey].es.onopen = () => { panels[panelKey].connected = true; console.log('SSE open', panelKey, url); };
-           panels[panelKey].es.onmessage = (e) => handleEvent(panelKey, e);
-           panels[panelKey].es.onerror = (ev) => { panels[panelKey].connected = false; console.error('SSE error', panelKey, ev); };
-         }
+          if (sinceMs !== undefined && sinceMs !== null) {
+            try { url.searchParams.set('since_ms', String(Number(sinceMs))); } catch(_){}
+          }
+           panels[panelKey].es = new EventSource(url.toString());
+            panels[panelKey].es.onopen = () => { panels[panelKey].connected = true; console.log('SSE open', panelKey, url); };
+            panels[panelKey].es.onmessage = (e) => handleEvent(panelKey, e);
+            panels[panelKey].es.onerror = (ev) => { panels[panelKey].connected = false; console.error('SSE error', panelKey, ev); };
+          }
 
         function applyPanel(panelKey, path) {
           // reconnect using the panel's waitSeconds

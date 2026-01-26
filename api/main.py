@@ -64,7 +64,7 @@ async def first_user_table(conn: aiosqlite.Connection) -> Optional[str]:
     return row[0] if row else None
 
 
-async def stream_table_rows_from_db(db_path: Path, table: Optional[str], request: Request, start_rowid: Optional[int], wait_seconds: float) -> AsyncGenerator[str, None]:
+async def stream_table_rows_from_db(db_path: Path, table: Optional[str], request: Request, start_rowid: Optional[int], wait_seconds: float, since_ms: Optional[int] = None) -> AsyncGenerator[str, None]:
     """Stream rows from a sqlite DB table as SSE messages.
 
     - db_path: path to sqlite file
@@ -103,6 +103,29 @@ async def stream_table_rows_from_db(db_path: Path, table: Optional[str], request
         if not cols:
             yield sse_encode(json.dumps({"error": "no_columns_found", "table": tbl}), event="error")
             return
+
+        # If since_ms was provided, try to resolve it to a starting rowid using likely timestamp-like columns
+        if since_ms is not None and start_rowid is None:
+            # find candidate columns for timestamps
+            cand_cols = [c for c in cols if re.search(r"timestamp|datetime|date|time|created_at|ts", c, re.IGNORECASE)]
+            resolved_rowid = None
+            for col in cand_cols:
+                # try a query that handles several storage formats:
+                # - numeric epoch stored in seconds or milliseconds (CAST column as integer)
+                # - ISO-like text that strftime can parse (strftime('%s', col) gives seconds)
+                # We compare in milliseconds so scale accordingly.
+                try:
+                    q = f"SELECT rowid FROM '{qtbl}' WHERE ((CAST(\"{col}\" AS INTEGER) >= ?) OR ((CAST(\"{col}\" AS INTEGER) * 1000) >= ?) OR ((strftime('%s', \"{col}\") IS NOT NULL) AND (strftime('%s', \"{col}\") * 1000 >= ?))) ORDER BY rowid ASC LIMIT 1"
+                    async with conn.execute(q, (since_ms, since_ms, since_ms)) as cur:
+                        r = await cur.fetchone()
+                        if r:
+                            resolved_rowid = r[0]
+                            break
+                except Exception:
+                    # ignore and try next candidate
+                    continue
+            if resolved_rowid:
+                start_rowid = int(resolved_rowid)
 
         # build select SQL
         if start_rowid:
@@ -176,27 +199,39 @@ async def stream_table_rows_from_db(db_path: Path, table: Optional[str], request
 
 # Keep existing simple endpoint for penmanshiel next-record (default)
 @app.get("/sse/next-record")
-async def sse_next_record(request: Request, start_rowid: Optional[int] = Query(None, description="Optional starting rowid (inclusive)"), wait_seconds: float = Query(DEFAULT_SEND_INTERVAL_SECONDS, ge=0.0, description="Seconds between records")):
-    gen = stream_table_rows_from_db(PENMANSHIEL_DATA_DB, PENMANSHIEL_TABLE, request, start_rowid, wait_seconds)
+async def sse_next_record(request: Request,
+                          start_rowid: Optional[int] = Query(None, description="Optional starting rowid (inclusive)"),
+                          wait_seconds: float = Query(DEFAULT_SEND_INTERVAL_SECONDS, ge=0.0, description="Seconds between records"),
+                          since_ms: Optional[int] = Query(None, description="Optional start timestamp in milliseconds since epoch")):
+    gen = stream_table_rows_from_db(PENMANSHIEL_DATA_DB, PENMANSHIEL_TABLE, request, start_rowid, wait_seconds, since_ms)
     return StreamingResponse(gen, media_type="text/event-stream")
 
 
 # Additional endpoints for kelmarsh data and both status DBs
 @app.get("/sse/kelmarsh_all_data")
-async def sse_kelmarsh_data(request: Request, start_rowid: Optional[int] = Query(None), wait_seconds: float = Query(DEFAULT_SEND_INTERVAL_SECONDS, ge=0.0)):
-    gen = stream_table_rows_from_db(KELMARSH_DATA_DB, None, request, start_rowid, wait_seconds)
+async def sse_kelmarsh_data(request: Request,
+                             start_rowid: Optional[int] = Query(None),
+                             wait_seconds: float = Query(DEFAULT_SEND_INTERVAL_SECONDS, ge=0.0),
+                             since_ms: Optional[int] = Query(None, description="Optional start timestamp in milliseconds since epoch")):
+    gen = stream_table_rows_from_db(KELMARSH_DATA_DB, None, request, start_rowid, wait_seconds, since_ms)
     return StreamingResponse(gen, media_type="text/event-stream")
 
 
 @app.get("/sse/penmanshiel_all_status")
-async def sse_penmanshiel_status(request: Request, start_rowid: Optional[int] = Query(None), wait_seconds: float = Query(DEFAULT_SEND_INTERVAL_SECONDS, ge=0.0)):
-    gen = stream_table_rows_from_db(PENMANSHIEL_STATUS_DB, None, request, start_rowid, wait_seconds)
+async def sse_penmanshiel_status(request: Request,
+                                  start_rowid: Optional[int] = Query(None),
+                                  wait_seconds: float = Query(DEFAULT_SEND_INTERVAL_SECONDS, ge=0.0),
+                                  since_ms: Optional[int] = Query(None, description="Optional start timestamp in milliseconds since epoch")):
+    gen = stream_table_rows_from_db(PENMANSHIEL_STATUS_DB, None, request, start_rowid, wait_seconds, since_ms)
     return StreamingResponse(gen, media_type="text/event-stream")
 
 
 @app.get("/sse/kelmarsh_all_status")
-async def sse_kelmarsh_status(request: Request, start_rowid: Optional[int] = Query(None), wait_seconds: float = Query(DEFAULT_SEND_INTERVAL_SECONDS, ge=0.0)):
-    gen = stream_table_rows_from_db(KELMARSH_STATUS_DB, None, request, start_rowid, wait_seconds)
+async def sse_kelmarsh_status(request: Request,
+                               start_rowid: Optional[int] = Query(None),
+                               wait_seconds: float = Query(DEFAULT_SEND_INTERVAL_SECONDS, ge=0.0),
+                               since_ms: Optional[int] = Query(None, description="Optional start timestamp in milliseconds since epoch")):
+    gen = stream_table_rows_from_db(KELMARSH_STATUS_DB, None, request, start_rowid, wait_seconds, since_ms)
     return StreamingResponse(gen, media_type="text/event-stream")
 
 
