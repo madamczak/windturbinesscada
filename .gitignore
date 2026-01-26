@@ -1,0 +1,30 @@
+# Ignore the data directory (explicit requirement)
+data/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Editor/project files
+.idea/
+.vscode/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Test and packaging
+.pytest_cache/
+.coverage
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets / env
+.env
+
+# Playwright browsers cache (optional)
+ms-playwright/
+

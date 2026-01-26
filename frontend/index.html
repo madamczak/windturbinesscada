@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Multi SSE Viewer</title>
+  <style>
+    body { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial; background:#f7fafc; color:#0f172a; padding:20px }
+    .grid { display:grid; grid-template-columns:repeat(2, 1fr); gap:16px; max-width:1200px; margin:0 auto }
+    .card { background:#fff; border-radius:10px; padding:14px; box-shadow:0 4px 18px rgba(2,6,23,0.06) }
+    h2 { margin:0 0 8px; font-size:16px }
+    .meta { color:#6b7280; font-size:13px; margin-bottom:8px }
+    .small { color:#6b7280; font-size:12px }
+    .param { font-size:14px; margin:6px 0 }
+    .wind-bar { height:12px; background:#eef6ff; border-radius:6px; overflow:hidden; margin-top:8px }
+    .wind-bar-inner { height:100%; background:linear-gradient(90deg,#60a5fa,#2563eb); width:0%; transition:width 0.5s ease }
+    .dir-row { display:flex; gap:12px; margin-top:8px; align-items:center }
+    .dir-cell { text-align:center }
+    .panel-footer { margin-top:10px; font-size:12px; color:#6b7280 }
+    .controls { display:flex; gap:8px; align-items:center; margin-top:6px }
+    input[type=number] { width:100px; padding:6px; border-radius:6px; border:1px solid #e5e7eb }
+    button { padding:6px 10px; border-radius:6px; border:1px solid #e5e7eb; background:#fff }
+    .badge { display:inline-block; padding:4px 8px; border-radius:6px; color:white; font-size:12px; font-weight:600 }
+    .badge-info { background:#2563eb } /* blue */
+    .badge-warning { background:#f59e0b; color:#111827 } /* yellow */
+    .badge-stop { background:#ef4444 } /* red */
+    .badge-default { background:#6b7280 } /* gray */
+  </style>
+</head>
+<body>
+  <h1 style="text-align:center; margin-bottom:18px">SSE Multi-Source Viewer</h1>
+  <div id="app">
+    <div class="grid">
+      <div class="card" v-for="panel in panelList" :key="panel.key">
+        <h2>{{ panel.title }}</h2>
+        <div class="meta">Endpoint: <code>{{ panel.path }}</code></div>
+
+        <div class="controls">
+          <label>Wait seconds: <input type="number" v-model.number="panels[panel.key].waitSeconds" min="0" step="0.1" /></label>
+          <button @click="applyPanel(panel.key, panel.path)">Apply</button>
+        </div>
+
+        <div class="small">Last rowid: <strong>{{ panels[panel.key].lastRowid != null ? panels[panel.key].lastRowid : '—' }}</strong></div>
+        <div class="small" v-if="panel.key==='kelmarsh_all_status' || panel.key==='penmanshiel_all_status'">Duration: <strong>{{ panels[panel.key].durationRaw != null ? panels[panel.key].durationRaw : '—' }}</strong> <span v-if="panels[panel.key].durationSec !== null">({{ panels[panel.key].durationSec }}s)</span></div>
+
+        <div class="wind-meta" style="margin-top:6px; display:flex; justify-content:space-between; align-items:center">
+          <div>Wind speed</div>
+          <div>{{ panels[panel.key].windSpeed !== null ? panels[panel.key].windSpeed + ' m/s' : '—' }}</div>
+        </div>
+        <div class="wind-bar"><div class="wind-bar-inner" :style="{ width: (Math.min(Math.max(panels[panel.key].windSpeed || 0, 0), 30) / 30 * 100) + '%' }"></div></div>
+
+        <div class="dir-row" v-if="panel.key === 'kelmarsh_all_data' || panel.key === 'penmanshiel_data'">
+          <div class="dir-cell">
+            <svg viewBox="0 0 100 100" width="60" height="60">
+              <circle cx="50" cy="50" r="38" stroke="#e6eef8" fill="#fff" stroke-width="3" />
+              <g :transform="'rotate(' + (panels[panel.key].windDir != null ? panels[panel.key].windDir : 0) + ' 50 50)'">
+                <line x1="50" y1="50" x2="50" y2="14" stroke="#0369a1" stroke-width="3" stroke-linecap="round" />
+                <circle cx="50" cy="50" r="3" fill="#0369a1" />
+              </g>
+            </svg>
+            <div class="small">Wind dir<br>{{ panels[panel.key].windDir !== null ? panels[panel.key].windDir + '°' : '—' }}</div>
+          </div>
+
+          <div class="dir-cell">
+            <svg viewBox="0 0 100 100" width="60" height="60">
+              <circle cx="50" cy="50" r="38" stroke="#e6eef8" fill="#fff" stroke-width="3" />
+              <g :transform="'rotate(' + (panels[panel.key].nacelleDir != null ? panels[panel.key].nacelleDir : 0) + ' 50 50)'">
+                <line x1="50" y1="50" x2="50" y2="14" stroke="#84cc16" stroke-width="3" stroke-linecap="round" />
+                <circle cx="50" cy="50" r="3" fill="#84cc16" />
+              </g>
+            </svg>
+            <div class="small">Nacelle<br>{{ panels[panel.key].nacelleDir !== null ? panels[panel.key].nacelleDir + '°' : '—' }}</div>
+          </div>
+        </div>
+
+        <div style="margin-top:10px">
+          <div class="param" v-for="(p,i) in panels[panel.key].display" :key="i"><strong>{{ p[0] }}</strong>: {{ p[1] }}</div>
+        </div>
+
+        <div class="panel-footer">Connected: <strong>{{ panels[panel.key].connected ? 'yes' : 'no' }}</strong></div>
+
+        <div v-if="panel.key === 'kelmarsh_all_status' || panel.key === 'penmanshiel_all_status'" style="margin-top:10px">
+          <span class="badge" :class="panels[panel.key].statusClass">{{ panels[panel.key].statusValue }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script>
+    const { createApp, reactive, onMounted, onBeforeUnmount } = Vue;
+
+    createApp({
+      setup() {
+        const panelList = [
+          { key: 'kelmarsh_all_data', title: 'Kelmarsh Data', path: '/sse/kelmarsh_all_data' },
+          { key: 'kelmarsh_all_status', title: 'Kelmarsh Status', path: '/sse/kelmarsh_all_status' },
+          { key: 'penmanshiel_data', title: 'Penmanshiel Data', path: '/sse/next-record' },
+          { key: 'penmanshiel_all_status', title: 'Penmanshiel Status', path: '/sse/penmanshiel_all_status' }
+        ];
+
+        const panels = reactive({
+          kelmarsh_all_data: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default' },
+          kelmarsh_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default' },
+          penmanshiel_data: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default' },
+          penmanshiel_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default' }
+        });
+
+        function buildUrl(path, waitSeconds) {
+          const base = (location.origin === 'null' ? 'http://127.0.0.1:8000' : location.origin);
+          const u = new URL(path, base);
+          if (waitSeconds !== undefined && waitSeconds !== null) u.searchParams.set('wait_seconds', String(waitSeconds));
+          return u.toString();
+        }
+
+        function extractFields(record) {
+          if (!record) return [];
+          const out = [];
+          // datetime
+          const dt = Object.keys(record).find(k => k && (k.toLowerCase().includes('date') || k.toLowerCase().includes('time')));
+          if (dt) out.push([dt, record[dt]]);
+          // wind speed (main)
+          const ws = Object.keys(record).find(k => k && k.toLowerCase().includes('wind speed') && !k.toLowerCase().includes('standard') );
+          if (ws) out.push([ws, record[ws]]);
+          // wind direction
+          const wd = Object.keys(record).find(k => k && (k.toLowerCase().includes('wind direction') || k.toLowerCase().includes('wind dir')));
+          if (wd) out.push([wd, record[wd]]);
+          // nacelle
+          const nac = Object.keys(record).find(k => k && k.toLowerCase().includes('nacelle'));
+          if (nac) out.push([nac, record[nac]]);
+          // duration (if present)
+          const dur = Object.keys(record).find(k => k && k.toLowerCase().includes('duration'));
+          if (dur) out.push([dur, record[dur]]);
+          return out;
+        }
+
+        function handleEvent(panelKey, e) {
+          try {
+            const obj = JSON.parse(e.data);
+            if (obj && obj.record) {
+              const rec = obj.record;
+              panels[panelKey].lastRowid = obj.rowid || panels[panelKey].lastRowid;
+              // For status panels show all parameters; for data panels keep compact display
+              if (panelKey === 'kelmarsh_all_status' || panelKey === 'penmanshiel_all_status') {
+                // show full record (array of [key, value])
+                panels[panelKey].display = Object.entries(rec);
+              } else {
+                panels[panelKey].display = extractFields(rec);
+              }
+
+              // duration: store raw and parsed seconds (supports HH:MM:SS, MM:SS)
+              panels[panelKey].durationRaw = null;
+              panels[panelKey].durationSec = null;
+              const durKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('duration'));
+              if (durKey) {
+                const raw = rec[durKey];
+                panels[panelKey].durationRaw = raw;
+                try {
+                  const s = String(raw || '').trim();
+                  if (s) {
+                    const parts = s.split(':').filter(p => p !== '');
+                    const nums = parts.map(p => parseFloat(p.replace(/[^0-9.]/g, ''))).filter(n => !Number.isNaN(n));
+                    if (nums.length) {
+                      const sec = nums[nums.length-1] || 0;
+                      const minute = nums.length >=2 ? nums[nums.length-2] : 0;
+                      const hour = nums.length >=3 ? nums[nums.length-3] : 0;
+                      const total = hour*3600 + minute*60 + sec;
+                      panels[panelKey].durationSec = Math.round(total*100)/100;
+                    }
+                  }
+                } catch (_) { panels[panelKey].durationSec = null; }
+              }
+
+              // status: extract Status-like field (case-insensitive) and map to a badge class
+              panels[panelKey].statusValue = null;
+              panels[panelKey].statusClass = 'badge-default';
+              const statusKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('status'));
+              if (statusKey) {
+                try {
+                  const sraw = String(rec[statusKey] || '').trim();
+                  panels[panelKey].statusValue = sraw || null;
+                  if (sraw) {
+                    const sl = sraw.toLowerCase();
+                    if (sl.includes('inform') || sl.includes('info')) panels[panelKey].statusClass = 'badge-info';
+                    else if (sl.includes('warn')) panels[panelKey].statusClass = 'badge-warning';
+                    else if (sl.includes('stop') || sl.includes('error') || sl.includes('critical')) panels[panelKey].statusClass = 'badge-stop';
+                    else panels[panelKey].statusClass = 'badge-default';
+                  }
+                } catch (_) { panels[panelKey].statusValue = null; panels[panelKey].statusClass = 'badge-default'; }
+              }
+
+
+              // wind speed
+              const wsKey = panels[panelKey].display.find(x => x[0].toLowerCase().includes('wind speed'));
+              panels[panelKey].windSpeed = wsKey ? parseFloat(String(wsKey[1]).replace(/[^0-9.+-eE]/g,'')) : null;
+              // wind dir
+              const wdKey = panels[panelKey].display.find(x => x[0].toLowerCase().includes('wind direction') || x[0].toLowerCase().includes('wind dir'));
+              panels[panelKey].windDir = wdKey ? Math.round(parseFloat(String(wdKey[1]).replace(/[^0-9.+-eE]/g,''))) : null;
+              // nacelle
+              const nacKey = panels[panelKey].display.find(x => x[0].toLowerCase().includes('nacelle'));
+              panels[panelKey].nacelleDir = nacKey ? Math.round(parseFloat(String(nacKey[1]).replace(/[^0-9.+-eE]/g,''))) : null;
+            }
+          } catch (err) { console.error('SSE parse error', err); }
+        }
+
+        function createConnection(panelKey, path, waitSeconds) {
+          try { if (panels[panelKey].es) panels[panelKey].es.close(); } catch(_){}
+          const ws = (waitSeconds !== undefined ? waitSeconds : panels[panelKey].waitSeconds);
+          const url = buildUrl(path, ws);
+           panels[panelKey].es = new EventSource(url);
+           panels[panelKey].es.onopen = () => { panels[panelKey].connected = true; console.log('SSE open', panelKey, url); };
+           panels[panelKey].es.onmessage = (e) => handleEvent(panelKey, e);
+           panels[panelKey].es.onerror = (ev) => { panels[panelKey].connected = false; console.error('SSE error', panelKey, ev); };
+         }
+
+        function applyPanel(panelKey, path) {
+          // reconnect using the panel's waitSeconds
+          createConnection(panelKey, path, panels[panelKey].waitSeconds);
+        }
+
+         onMounted(() => {
+          panelList.forEach(p => createConnection(p.key, p.path));
+         });
+
+         onBeforeUnmount(() => {
+           Object.keys(panels).forEach(k => { try { if (panels[k].es) panels[k].es.close(); } catch(_){} });
+         });
+
+         return { panelList, panels };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>
+
