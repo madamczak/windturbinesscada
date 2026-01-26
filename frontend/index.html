@@ -25,13 +25,39 @@
     .badge-warning { background:#f59e0b; color:#111827 } /* yellow */
     .badge-stop { background:#ef4444 } /* red */
     .badge-default { background:#6b7280 } /* gray */
+    /* Toggle buttons */
+    .toggle-group { display:flex; gap:8px; justify-content:center; margin-bottom:12px }
+    .toggle-btn { padding:8px 12px; border-radius:8px; border:1px solid #e5e7eb; cursor:pointer; background:#fff }
+    .toggle-btn.active { background:#2563eb; color:#fff; border-color:#1e40af }
   </style>
 </head>
 <body>
   <h1 style="text-align:center; margin-bottom:18px">SSE Multi-Source Viewer</h1>
   <div id="app">
+    <!-- site toggle buttons -->
+    <div class="toggle-group">
+      <button :class="['toggle-btn', activeSite === 'kelmarsh' ? 'active' : '']" @click="setSite('kelmarsh')">Kelmarsh</button>
+      <button :class="['toggle-btn', activeSite === 'penmanshiel' ? 'active' : '']" @click="setSite('penmanshiel')">Penmanshiel</button>
+    </div>
+
+    <!-- per-site calendar controls: show inputs for data and status separately for the active site -->
+    <div style="display:flex; gap:12px; justify-content:center; margin-bottom:14px; align-items:center">
+      <div v-if="activeSite === 'kelmarsh'" style="display:flex; gap:10px; align-items:center">
+        <label style="font-size:13px">Kelmarsh Data from: <input type="date" v-model="siteDates.kelmarsh_data" @change="applyDate('kelmarsh','data')" /></label>
+        <button class="toggle-btn" @click="clearDate('kelmarsh','data')">Clear</button>
+        <label style="font-size:13px">Kelmarsh Status from: <input type="date" v-model="siteDates.kelmarsh_status" @change="applyDate('kelmarsh','status')" /></label>
+        <button class="toggle-btn" @click="clearDate('kelmarsh','status')">Clear</button>
+      </div>
+      <div v-else-if="activeSite === 'penmanshiel'" style="display:flex; gap:10px; align-items:center">
+        <label style="font-size:13px">Penmanshiel Data from: <input type="date" v-model="siteDates.penmanshiel_data" @change="applyDate('penmanshiel','data')" /></label>
+        <button class="toggle-btn" @click="clearDate('penmanshiel','data')">Clear</button>
+        <label style="font-size:13px">Penmanshiel Status from: <input type="date" v-model="siteDates.penmanshiel_status" @change="applyDate('penmanshiel','status')" /></label>
+        <button class="toggle-btn" @click="clearDate('penmanshiel','status')">Clear</button>
+      </div>
+    </div>
+
     <div class="grid">
-      <div class="card" v-for="panel in panelList" :key="panel.key">
+      <div class="card" v-for="panel in visiblePanels" :key="panel.key">
         <h2>{{ panel.title }}</h2>
         <div class="meta">Endpoint: <code>{{ panel.path }}</code></div>
 
@@ -88,7 +114,7 @@
 
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <script>
-    const { createApp, reactive, onMounted, onBeforeUnmount } = Vue;
+    const { createApp, reactive, ref, onMounted, onBeforeUnmount, computed } = Vue;
 
     createApp({
       setup() {
@@ -104,6 +130,60 @@
           kelmarsh_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default' },
           penmanshiel_data: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default' },
           penmanshiel_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default' }
+        });
+
+        // per-panel-type selected start dates (YYYY-MM-DD) — null means no filtering
+        const siteDates = reactive({ kelmarsh_data: null, kelmarsh_status: null, penmanshiel_data: null, penmanshiel_status: null });
+        // track whether we've set the initial date for each panel type from incoming data
+        const siteInitialized = reactive({ kelmarsh_data: false, kelmarsh_status: false, penmanshiel_data: false, penmanshiel_status: false });
+
+        function formatDateLocalYYYYMMDD(ms) {
+          const d = new Date(ms);
+          const y = d.getFullYear();
+          const m = String(d.getMonth() + 1).padStart(2, '0');
+          const day = String(d.getDate()).padStart(2, '0');
+          return `${y}-${m}-${day}`;
+        }
+
+        function applyDate(site, type) {
+          // clear current displayed values for panels of this site+type — subsequent incoming SSE that match the date will populate
+          panelList.forEach(p => {
+            const isSite = p.key.startsWith(site);
+            const isType = (type === 'status') ? p.key.includes('status') : !p.key.includes('status');
+            if (isSite && isType) {
+              const s = panels[p.key];
+              s.display = [];
+              s.lastRowid = null;
+              s.durationRaw = null;
+              s.durationSec = null;
+              s.windSpeed = null;
+              s.windDir = null;
+              s.nacelleDir = null;
+            }
+          });
+        }
+
+        function clearDate(site, type) {
+          const key = `${site}_${type}`;
+          siteDates[key] = null;
+          applyDate(site, type);
+        }
+
+        // activeSite controls which group's panels are visible: 'kelmarsh' or 'penmanshiel'
+        const activeSite = ref('kelmarsh');
+
+        function setSite(name) {
+          // only change the active site used for visibility; keep SSE connections running in background
+          if (name !== 'kelmarsh' && name !== 'penmanshiel') return;
+          activeSite.value = name;
+        }
+
+        const visiblePanels = computed(() => {
+          return panelList.filter(p => {
+            if (activeSite.value === 'kelmarsh') return p.key.startsWith('kelmarsh');
+            if (activeSite.value === 'penmanshiel') return p.key.startsWith('penmanshiel');
+            return true;
+          });
         });
 
         function buildUrl(path, waitSeconds) {
@@ -134,77 +214,130 @@
           return out;
         }
 
+        function getRecordTimestampMs(rec) {
+          if (!rec || typeof rec !== 'object') return null;
+          const keys = Object.keys(rec || {});
+          const candidate = keys.find(k => /timestamp|datetime|date|time|created_at|ts/i.test(k));
+          if (!candidate) return null;
+          const v = rec[candidate];
+          if (v == null) return null;
+          // numeric
+          if (typeof v === 'number') {
+            // if seconds -> convert to ms
+            if (v < 1e12) return v * 1000;
+            return v;
+          }
+          // string
+          try {
+            let s = String(v).trim();
+            // remove timezone words like 'UTC' to help parse, but keep ISO formats
+            // If format is YYYY-MM-DD or YYYY-MM-DD HH:MM:SS, append T00:00:00 when only date
+            const isoLike = /^\d{4}-\d{2}-\d{2}$/;
+            if (isoLike.test(s)) s = s + 'T00:00:00';
+            const ms = Date.parse(s);
+            if (!Number.isNaN(ms)) return ms;
+          } catch (_) {}
+          return null;
+        }
+
         function handleEvent(panelKey, e) {
           try {
             const obj = JSON.parse(e.data);
             if (obj && obj.record) {
-              const rec = obj.record;
-              panels[panelKey].lastRowid = obj.rowid || panels[panelKey].lastRowid;
-              // For status panels show all parameters; for data panels keep compact display
-              if (panelKey === 'kelmarsh_all_status' || panelKey === 'penmanshiel_all_status') {
-                // show full record (array of [key, value])
-                panels[panelKey].display = Object.entries(rec);
-              } else {
-                panels[panelKey].display = extractFields(rec);
+              // determine site and type (status/data) from panelKey
+              const site = panelKey.startsWith('kelmarsh') ? 'kelmarsh' : 'penmanshiel';
+              const type = panelKey.toLowerCase().includes('status') ? 'status' : 'data';
+              const key = `${site}_${type}`;
+              // if we haven't initialized this panel-type's date yet and a timestamp is available, set initial date
+              if (!siteInitialized[key]) {
+                const recTsInit = getRecordTimestampMs(obj.record);
+                if (recTsInit !== null) {
+                  siteDates[key] = formatDateLocalYYYYMMDD(recTsInit);
+                  siteInitialized[key] = true;
+                  // do NOT call applyDate here — we don't want to clear existing display on initial auto-set
+                }
               }
-
-              // duration: store raw and parsed seconds (supports HH:MM:SS, MM:SS)
-              panels[panelKey].durationRaw = null;
-              panels[panelKey].durationSec = null;
-              const durKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('duration'));
-              if (durKey) {
-                const raw = rec[durKey];
-                panels[panelKey].durationRaw = raw;
-                try {
-                  const s = String(raw || '').trim();
-                  if (s) {
-                    const parts = s.split(':').filter(p => p !== '');
-                    const nums = parts.map(p => parseFloat(p.replace(/[^0-9.]/g, ''))).filter(n => !Number.isNaN(n));
-                    if (nums.length) {
-                      const sec = nums[nums.length-1] || 0;
-                      const minute = nums.length >=2 ? nums[nums.length-2] : 0;
-                      const hour = nums.length >=3 ? nums[nums.length-3] : 0;
-                      const total = hour*3600 + minute*60 + sec;
-                      panels[panelKey].durationSec = Math.round(total*100)/100;
-                    }
+              // apply per-panel-type date filter (if set)
+              const startDate = siteDates[key];
+              if (startDate) {
+                const recTs = getRecordTimestampMs(obj.record);
+                if (recTs !== null) {
+                  // convert selected date (YYYY-MM-DD) to midnight local
+                  const startMs = new Date(startDate + 'T00:00:00').getTime();
+                  if (recTs < startMs) {
+                    // ignore older record
+                    return;
                   }
-                } catch (_) { panels[panelKey].durationSec = null; }
+                }
+                // if recTs is null, we cannot determine time — accept the record to avoid hiding everything
               }
+               const rec = obj.record;
+               panels[panelKey].lastRowid = obj.rowid || panels[panelKey].lastRowid;
+               // For status panels show all parameters; for data panels keep compact display
+               if (panelKey === 'kelmarsh_all_status' || panelKey === 'penmanshiel_all_status') {
+                 // show full record (array of [key, value])
+                 panels[panelKey].display = Object.entries(rec);
+               } else {
+                 panels[panelKey].display = extractFields(rec);
+               }
 
-              // status: extract Status-like field (case-insensitive) and map to a badge class
-              panels[panelKey].statusValue = null;
-              panels[panelKey].statusClass = 'badge-default';
-              const statusKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('status'));
-              if (statusKey) {
-                try {
-                  const sraw = String(rec[statusKey] || '').trim();
-                  panels[panelKey].statusValue = sraw || null;
-                  if (sraw) {
-                    const sl = sraw.toLowerCase();
-                    if (sl.includes('inform') || sl.includes('info')) panels[panelKey].statusClass = 'badge-info';
-                    else if (sl.includes('warn')) panels[panelKey].statusClass = 'badge-warning';
-                    else if (sl.includes('stop') || sl.includes('error') || sl.includes('critical')) panels[panelKey].statusClass = 'badge-stop';
-                    else panels[panelKey].statusClass = 'badge-default';
-                  }
-                } catch (_) { panels[panelKey].statusValue = null; panels[panelKey].statusClass = 'badge-default'; }
-              }
+               // duration: store raw and parsed seconds (supports HH:MM:SS, MM:SS)
+               panels[panelKey].durationRaw = null;
+               panels[panelKey].durationSec = null;
+               const durKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('duration'));
+               if (durKey) {
+                 const raw = rec[durKey];
+                 panels[panelKey].durationRaw = raw;
+                 try {
+                   const s = String(raw || '').trim();
+                   if (s) {
+                     const parts = s.split(':').filter(p => p !== '');
+                     const nums = parts.map(p => parseFloat(p.replace(/[^0-9.]/g,''))).filter(n => !Number.isNaN(n));
+                     if (nums.length) {
+                       const sec = nums[nums.length-1] || 0;
+                       const minute = nums.length >=2 ? nums[nums.length-2] : 0;
+                       const hour = nums.length >=3 ? nums[nums.length-3] : 0;
+                       const total = hour*3600 + minute*60 + sec;
+                       panels[panelKey].durationSec = Math.round(total*100)/100;
+                     }
+                   }
+                 } catch (_) { panels[panelKey].durationSec = null; }
+               }
+
+               // status: extract Status-like field (case-insensitive) and map to a badge class
+               panels[panelKey].statusValue = null;
+               panels[panelKey].statusClass = 'badge-default';
+               const statusKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('status'));
+               if (statusKey) {
+                 try {
+                   const sraw = String(rec[statusKey] || '').trim();
+                   panels[panelKey].statusValue = sraw || null;
+                   if (sraw) {
+                     const sl = sraw.toLowerCase();
+                     if (sl.includes('inform') || sl.includes('info')) panels[panelKey].statusClass = 'badge-info';
+                     else if (sl.includes('warn')) panels[panelKey].statusClass = 'badge-warning';
+                     else if (sl.includes('stop') || sl.includes('error') || sl.includes('critical')) panels[panelKey].statusClass = 'badge-stop';
+                     else panels[panelKey].statusClass = 'badge-default';
+                   }
+                 } catch (_) { panels[panelKey].statusValue = null; panels[panelKey].statusClass = 'badge-default'; }
+               }
 
 
-              // wind speed
-              const wsKey = panels[panelKey].display.find(x => x[0].toLowerCase().includes('wind speed'));
-              panels[panelKey].windSpeed = wsKey ? parseFloat(String(wsKey[1]).replace(/[^0-9.+-eE]/g,'')) : null;
-              // wind dir
-              const wdKey = panels[panelKey].display.find(x => x[0].toLowerCase().includes('wind direction') || x[0].toLowerCase().includes('wind dir'));
-              panels[panelKey].windDir = wdKey ? Math.round(parseFloat(String(wdKey[1]).replace(/[^0-9.+-eE]/g,''))) : null;
-              // nacelle
-              const nacKey = panels[panelKey].display.find(x => x[0].toLowerCase().includes('nacelle'));
-              panels[panelKey].nacelleDir = nacKey ? Math.round(parseFloat(String(nacKey[1]).replace(/[^0-9.+-eE]/g,''))) : null;
-            }
-          } catch (err) { console.error('SSE parse error', err); }
-        }
+               // wind speed
+               const wsKey = panels[panelKey].display.find(x => x[0].toLowerCase().includes('wind speed'));
+               panels[panelKey].windSpeed = wsKey ? parseFloat(String(wsKey[1]).replace(/[^0-9.+-eE]/g,'')) : null;
+               // wind dir
+               const wdKey = panels[panelKey].display.find(x => x[0].toLowerCase().includes('wind direction') || x[0].toLowerCase().includes('wind dir'));
+               panels[panelKey].windDir = wdKey ? Math.round(parseFloat(String(wdKey[1]).replace(/[^0-9.+-eE]/g,''))) : null;
+               // nacelle
+               const nacKey = panels[panelKey].display.find(x => x[0].toLowerCase().includes('nacelle'));
+               panels[panelKey].nacelleDir = nacKey ? Math.round(parseFloat(String(nacKey[1]).replace(/[^0-9.+-eE]/g,''))) : null;
+             }
+           } catch (err) { console.error('SSE parse error', err); }
+         }
 
-        function createConnection(panelKey, path, waitSeconds) {
-          try { if (panels[panelKey].es) panels[panelKey].es.close(); } catch(_){}
+         function createConnection(panelKey, path, waitSeconds) {
+          try { if (panels[panelKey].es) panels[panelKey].es.close(); } catch(_){ }
           const ws = (waitSeconds !== undefined ? waitSeconds : panels[panelKey].waitSeconds);
           const url = buildUrl(path, ws);
            panels[panelKey].es = new EventSource(url);
@@ -219,14 +352,17 @@
         }
 
          onMounted(() => {
-          panelList.forEach(p => createConnection(p.key, p.path));
+          // open connections for all panels so inactive sites continue to receive updates in background
+          panelList.forEach(p => {
+            try { createConnection(p.key, p.path); } catch(_){ }
+          });
          });
 
          onBeforeUnmount(() => {
            Object.keys(panels).forEach(k => { try { if (panels[k].es) panels[k].es.close(); } catch(_){} });
          });
 
-         return { panelList, panels };
+         return { panelList, panels, visiblePanels, activeSite, setSite, siteDates, applyDate, clearDate };
       }
     }).mount('#app');
   </script>
