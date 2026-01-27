@@ -89,8 +89,6 @@
     <!-- per-site calendar controls: show inputs for data and status separately for the active site -->
     <div style="display:flex; gap:12px; justify-content:center; margin-bottom:14px; align-items:center">
       <div v-if="activeSite === 'kelmarsh'" style="display:flex; gap:10px; align-items:center">
-        <label style="font-size:13px">Kelmarsh Data from: <input type="date" v-model="siteDates.kelmarsh_data" @change="applyDate('kelmarsh','data')" /></label>
-        <button class="toggle-btn" @click="clearDate('kelmarsh','data')">Clear</button>
         <label style="font-size:13px">Kelmarsh Status from: <input type="date" v-model="siteDates.kelmarsh_status" @change="applyDate('kelmarsh','status')" /></label>
         <button class="toggle-btn" @click="clearDate('kelmarsh','status')">Clear</button>
       </div>
@@ -126,7 +124,7 @@
         </div>
         <div class="wind-bar"><div class="wind-bar-inner" :style="{ width: (Math.min(Math.max(panels[panel.key].windSpeed || 0, 0), 30) / 30 * 100) + '%' }"></div></div>
 
-        <div class="dir-row" v-if="panel.key === 'kelmarsh_all_data' || panel.key === 'penmanshiel_data'">
+        <div class="dir-row" v-if="panel.key === 'penmanshiel_data'">
           <div class="dir-cell">
             <svg viewBox="0 0 100 100" width="60" height="60">
               <circle cx="50" cy="50" r="38" stroke="#e6eef8" fill="#fff" stroke-width="3" />
@@ -187,25 +185,23 @@
     createApp({
       setup() {
         const panelList = [
-          { key: 'kelmarsh_all_data', title: 'Kelmarsh Data', path: '/sse/kelmarsh_all_data', byTurbine: '/sse/by-turbine/kelmarsh_data', minT: 1, maxT: 6 },
           { key: 'kelmarsh_all_status', title: 'Kelmarsh Status', path: '/sse/kelmarsh_all_status', byTurbine: '/sse/by-turbine/kelmarsh_status', minT: 1, maxT: 6 },
           { key: 'penmanshiel_data', title: 'Penmanshiel Data', path: '/sse/next-record', byTurbine: '/sse/by-turbine/penmanshiel_data', minT: 1, maxT: 15 },
           { key: 'penmanshiel_all_status', title: 'Penmanshiel Status', path: '/sse/penmanshiel_all_status', byTurbine: '/sse/by-turbine/penmanshiel_status', minT: 1, maxT: 15 }
         ];
 
         const panels = reactive({
-          kelmarsh_all_data: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false, turbine: null, reconnectTimer: null },
           kelmarsh_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false, turbine: null, reconnectTimer: null },
           penmanshiel_data: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false, turbine: null, reconnectTimer: null },
           penmanshiel_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false, turbine: null, reconnectTimer: null }
         });
 
         // per-panel-type selected start dates (YYYY-MM-DD) — null means no filtering
-        const siteDates = reactive({ kelmarsh_data: null, kelmarsh_status: null, penmanshiel_data: null, penmanshiel_status: null });
+        const siteDates = reactive({ kelmarsh_status: null, penmanshiel_data: null, penmanshiel_status: null });
         // track whether we've set the initial date for each panel type from incoming data
-        const siteInitialized = reactive({ kelmarsh_data: false, kelmarsh_status: false, penmanshiel_data: false, penmanshiel_status: false });
+        const siteInitialized = reactive({ kelmarsh_status: false, penmanshiel_data: false, penmanshiel_status: false });
         // per-panel-type last seen timestamp in ms (used when switching turbines to continue from last time)
-        const lastSeenMs = reactive({ kelmarsh_data: null, kelmarsh_status: null, penmanshiel_data: null, penmanshiel_status: null });
+        const lastSeenMs = reactive({ kelmarsh_status: null, penmanshiel_data: null, penmanshiel_status: null });
 
         function formatDateLocalYYYYMMDD(ms) {
           const d = new Date(ms);
