@@ -45,6 +45,47 @@
       <button :class="['toggle-btn', activeSite === 'penmanshiel' ? 'active' : '']" @click="setSite('penmanshiel')">Penmanshiel</button>
     </div>
 
+    <!-- Overview: small turbine grid showing Nacelle and Wind directions for all turbines -->
+    <div style="max-width:1200px; margin:10px auto 18px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <div style="font-weight:700">Turbine Overview ({{ activeSite }})</div>
+        <div>
+          <button class="toggle-btn" :class="{ active: overviewEnabled }" @click="toggleOverview()">Toggle Overview</button>
+        </div>
+      </div>
+      <div v-if="overviewEnabled" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px">
+        <div v-for="t in overviewTurbineRange" :key="t" class="card" style="padding:8px; text-align:center">
+          <div style="font-weight:700; margin-bottom:6px">Turbine {{ t }}</div>
+          <div style="display:flex; gap:10px; justify-content:center; align-items:center; margin:6px 0">
+            <!-- Nacelle SVG -->
+            <div style="text-align:center; width:78px">
+              <svg viewBox="0 0 100 100" width="70" height="70" aria-hidden="true">
+                <circle cx="50" cy="50" r="38" stroke="#e6eef8" fill="#fff" stroke-width="3" />
+                <g :transform="rot(t,'nacelle')">
+                  <line x1="50" y1="50" x2="50" y2="14" stroke="#84cc16" stroke-width="3" stroke-linecap="round" />
+                  <circle cx="50" cy="50" r="3" fill="#84cc16" />
+                </g>
+              </svg>
+              <div class="small">Nac: <strong>{{ overviewData[t] && overviewData[t].nacelle != null ? overviewData[t].nacelle + '°' : '—' }}</strong></div>
+            </div>
+
+            <!-- Wind SVG -->
+            <div style="text-align:center; width:78px">
+              <svg viewBox="0 0 100 100" width="70" height="70" aria-hidden="true">
+                <circle cx="50" cy="50" r="38" stroke="#eef6ff" fill="#fff" stroke-width="3" />
+                <g :transform="rot(t,'wind')">
+                  <line x1="50" y1="50" x2="50" y2="10" stroke="#0369a1" stroke-width="3" stroke-linecap="round" />
+                  <circle cx="50" cy="50" r="3" fill="#0369a1" />
+                </g>
+              </svg>
+              <div class="small">Wind: <strong>{{ overviewData[t] && overviewData[t].wind != null ? overviewData[t].wind + '°' : '—' }}</strong></div>
+            </div>
+          </div>
+          <div class="small">TS: <span style="font-size:11px">{{ overviewData[t] && overviewData[t].ts ? new Date(overviewData[t].ts).toLocaleString() : '—' }}</span></div>
+        </div>
+      </div>
+    </div>
+
     <!-- per-site calendar controls: show inputs for data and status separately for the active site -->
     <div style="display:flex; gap:12px; justify-content:center; margin-bottom:14px; align-items:center">
       <div v-if="activeSite === 'kelmarsh'" style="display:flex; gap:10px; align-items:center">
@@ -138,7 +179,8 @@
     </div>
   </div>
 
-  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+  <script>if(typeof Vue === 'undefined'){ console.error('Vue failed to load - check network or CDN.'); document.body.insertAdjacentHTML('afterbegin', '<div style="background:#fee; color:#900; padding:8px; text-align:center">Vue failed to load - check network or CDN.</div>'); }</script>
   <script>
     const { createApp, reactive, ref, onMounted, onBeforeUnmount, computed } = Vue;
 
@@ -227,6 +269,8 @@
           // only change the active site used for visibility; keep SSE connections running in background
           if (name !== 'kelmarsh' && name !== 'penmanshiel') return;
           activeSite.value = name;
+          // restart overview streams for the newly selected site
+          try { if (overviewEnabled.value) { startOverview(); } } catch(_){}
         }
 
         const visiblePanels = computed(() => {
@@ -244,45 +288,50 @@
           return u; // return URL object so callers can append additional params like since_ms
         }
 
-        function extractFields(record) {
-          if (!record) return [];
-          const out = [];
-          // datetime
-          const dt = Object.keys(record).find(k => k && (k.toLowerCase().includes('date') || k.toLowerCase().includes('time')));
-          if (dt) out.push([dt, record[dt]]);
-          // wind speed (main)
-          const ws = Object.keys(record).find(k => k && k.toLowerCase().includes('wind speed') && !k.toLowerCase().includes('standard') );
-          if (ws) out.push([ws, record[ws]]);
-          // wind direction
-          const wd = Object.keys(record).find(k => k && (k.toLowerCase().includes('wind direction') || k.toLowerCase().includes('wind dir')));
-          if (wd) out.push([wd, record[wd]]);
-          // nacelle
-          const nac = Object.keys(record).find(k => k && k.toLowerCase().includes('nacelle'));
-          if (nac) out.push([nac, record[nac]]);
-          // duration (if present)
-          const dur = Object.keys(record).find(k => k && k.toLowerCase().includes('duration'));
-          if (dur) out.push([dur, record[dur]]);
-          return out;
+        // Overview: show nacelle and wind dir for all turbines
+        const overviewEnabled = ref(true);
+        const overviewData = reactive({}); // keys: turbine number -> { nacelle, wind, ts }
+        const overviewES = {}; // active EventSource per turbine
+        const overviewReconnect = {}; // timers
+
+        const overviewTurbineRange = computed(() => {
+          if (activeSite.value === 'kelmarsh') return Array.from({length: 6}, (_, i) => i+1);
+          return Array.from({length: 15}, (_, i) => i+1);
+        });
+
+        function toggleOverview() {
+          overviewEnabled.value = !overviewEnabled.value;
+          if (overviewEnabled.value) startOverview(); else stopOverview();
         }
 
-        function getRecordTimestampMs(rec) {
+        function startOverview(){
+          stopOverview();
+          overviewTurbineRange.value.forEach(t => openOverviewForTurbine(t));
+        }
+
+        function stopOverview(){
+          Object.keys(overviewES).forEach(k => {
+            try { overviewES[k].close(); } catch(_){}
+            try { clearTimeout(overviewReconnect[k]); } catch(_){}
+            delete overviewES[k];
+            delete overviewReconnect[k];
+          });
+        }
+
+        // lightweight timestamp parser for overview (avoids referencing other functions)
+        function parseRecordTimestampMs(rec) {
           if (!rec || typeof rec !== 'object') return null;
           const keys = Object.keys(rec || {});
           const candidate = keys.find(k => /timestamp|datetime|date|time|created_at|ts/i.test(k));
           if (!candidate) return null;
           const v = rec[candidate];
           if (v == null) return null;
-          // numeric
           if (typeof v === 'number') {
-            // if seconds -> convert to ms
             if (v < 1e12) return v * 1000;
             return v;
           }
-          // string
           try {
             let s = String(v).trim();
-            // remove timezone words like 'UTC' to help parse, but keep ISO formats
-            // If format is YYYY-MM-DD or YYYY-MM-DD HH:MM:SS, append T00:00:00 when only date
             const isoLike = /^\d{4}-\d{2}-\d{2}$/;
             if (isoLike.test(s)) s = s + 'T00:00:00';
             const ms = Date.parse(s);
@@ -291,213 +340,52 @@
           return null;
         }
 
-        function handleEvent(panelKey, e) {
+        function rot(t, kind) {
           try {
-            const obj = JSON.parse(e.data);
-            if (obj && obj.record) {
-              // determine site and type (status/data) from panelKey
-              const site = panelKey.startsWith('kelmarsh') ? 'kelmarsh' : 'penmanshiel';
-              const type = panelKey.toLowerCase().includes('status') ? 'status' : 'data';
-              const key = `${site}_${type}`;
-              // if we haven't initialized this panel-type's date yet and a timestamp is available, set initial date
-              if (!siteInitialized[key]) {
-                const recTsInit = getRecordTimestampMs(obj.record);
-                if (recTsInit !== null) {
-                  siteDates[key] = formatDateLocalYYYYMMDD(recTsInit);
-                  siteInitialized[key] = true;
-                  // do NOT call applyDate here — we don't want to clear existing display on initial auto-set
-                }
+            const v = overviewData[t] && overviewData[t][kind] != null ? Number(overviewData[t][kind]) : 0;
+            if (!Number.isFinite(v)) return 'rotate(0 50 50)';
+            return 'rotate(' + Math.round(v) + ' 50 50)';
+          } catch (_) { return 'rotate(0 50 50)'; }
+        }
+
+        function openOverviewForTurbine(t) {
+          const site = activeSite.value;
+          const basePath = site === 'kelmarsh' ? '/sse/by-turbine/kelmarsh_data/' : '/sse/by-turbine/penmanshiel_data/';
+          const endpoint = basePath + t;
+          const url = buildUrl(endpoint, 1); // 1s wait to avoid tight loops
+          // close existing
+          try { if (overviewES[t]) { overviewES[t].close(); } } catch(_){}
+          try { if (overviewReconnect[t]) { clearTimeout(overviewReconnect[t]); overviewReconnect[t] = null; } } catch(_){}
+          const es = new EventSource(url.toString());
+          overviewES[t] = es;
+          overviewData[t] = overviewData[t] || {nacelle: null, wind: null, ts: null};
+          es.onopen = () => { try { if (overviewReconnect[t]) { clearTimeout(overviewReconnect[t]); overviewReconnect[t] = null; } } catch(_){} };
+          es.onmessage = (ev) => {
+            try {
+              const obj = JSON.parse(ev.data);
+              if (obj && obj.record) {
+                const rec = obj.record;
+                // find nacelle and wind dir keys
+                const nacKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('nacelle'));
+                const wdKey = Object.keys(rec).find(k => k && (k.toLowerCase().includes('wind direction') || k.toLowerCase().includes('wind dir')));
+                const nac = nacKey ? Math.round(parseFloat(String(rec[nacKey]).replace(/[^0-9.+-eE]/g,''))) : null;
+                const wind = wdKey ? Math.round(parseFloat(String(rec[wdKey]).replace(/[^0-9.+-eE]/g,''))) : null;
+                const ts = parseRecordTimestampMs(rec) || Date.now();
+                overviewData[t] = { nacelle: nac, wind: wind, ts: ts };
               }
-              // apply per-panel-type date filter (if set)
-              const startDate = siteDates[key];
-              if (startDate) {
-                const recTs = getRecordTimestampMs(obj.record);
-                if (recTs !== null) {
-                  // convert selected date (YYYY-MM-DD) to midnight local
-                  const startMs = new Date(startDate + 'T00:00:00').getTime();
-                  if (recTs < startMs) {
-                    // ignore older record
-                    return;
-                  }
-                }
-                // if recTs is null, we cannot determine time — accept the record to avoid hiding everything
-              }
-               // if server sent a non-record control message (e.g., end_of_data), stop loading
-               if (obj.info) {
-                 try { panels[panelKey].loading = false; } catch(_){ }
-                 // if end_of_data, close the current EventSource and schedule a reconnect
-                 if (obj.info === 'end_of_data') {
-                   try { if (panels[panelKey].es) panels[panelKey].es.close(); } catch(_){}
-                   // clear any existing timer
-                   try { if (panels[panelKey].reconnectTimer) { clearTimeout(panels[panelKey].reconnectTimer); panels[panelKey].reconnectTimer = null; } } catch(_){}
-                   // schedule reconnect after a short delay using lastSeenMs/siteDates as since_ms
-                   try {
-                     const meta = panelList.find(p => p.key === panelKey) || null;
-                     const path = meta ? meta.path : '/sse/next-record';
-                     const site = panelKey.startsWith('kelmarsh') ? 'kelmarsh' : 'penmanshiel';
-                     const type = panelKey.toLowerCase().includes('status') ? 'status' : 'data';
-                     const siteKey = `${site}_${type}`;
-                     const since = lastSeenMs[siteKey] || (siteDates[siteKey] ? new Date(siteDates[siteKey] + 'T00:00:00').getTime() : null);
-                     panels[panelKey].reconnectTimer = setTimeout(() => {
-                       try { createConnection(panelKey, basePath, panels[panelKey].waitSeconds, since); } catch(_){}
-                     }, 1500);
-                   } catch(_){}
-                 }
-                 return;
-               }
-               const rec = obj.record;
-               panels[panelKey].lastRowid = obj.rowid || panels[panelKey].lastRowid;
-               // For status panels show all parameters; for data panels keep compact display
-               if (panelKey === 'kelmarsh_all_status' || panelKey === 'penmanshiel_all_status') {
-                 // show full record (array of [key, value])
-                 panels[panelKey].display = Object.entries(rec);
-               } else {
-                 panels[panelKey].display = extractFields(rec);
-               }
+            } catch (err) { console.error('overview parse error', t, err); }
+          };
+          es.onerror = (err) => {
+            console.error('overview ES error', t, err);
+            try { if (overviewReconnect[t]) clearTimeout(overviewReconnect[t]); } catch(_){}
+            overviewReconnect[t] = setTimeout(() => {
+              try { openOverviewForTurbine(t); } catch(_){}
+            }, 2000);
+          };
+        }
 
-               // duration: store raw and parsed seconds (supports HH:MM:SS, MM:SS)
-               panels[panelKey].durationRaw = null;
-               panels[panelKey].durationSec = null;
-               const durKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('duration'));
-               if (durKey) {
-                 const raw = rec[durKey];
-                 panels[panelKey].durationRaw = raw;
-                 try {
-                   const s = String(raw || '').trim();
-                   if (s) {
-                     const parts = s.split(':').filter(p => p !== '');
-                     const nums = parts.map(p => parseFloat(p.replace(/[^0-9.]/g,''))).filter(n => !Number.isNaN(n));
-                     if (nums.length) {
-                       const sec = nums[nums.length-1] || 0;
-                       const minute = nums.length >=2 ? nums[nums.length-2] : 0;
-                       const hour = nums.length >=3 ? nums[nums.length-3] : 0;
-                       const total = hour*3600 + minute*60 + sec;
-                       panels[panelKey].durationSec = Math.round(total*100)/100;
-                     }
-                   }
-                 } catch (_) { panels[panelKey].durationSec = null; }
-               }
-
-               // status: extract Status-like field (case-insensitive) and map to a badge class
-               panels[panelKey].statusValue = null;
-               panels[panelKey].statusClass = 'badge-default';
-               const statusKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('status'));
-               if (statusKey) {
-                 try {
-                   const sraw = String(rec[statusKey] || '').trim();
-                   panels[panelKey].statusValue = sraw || null;
-                   if (sraw) {
-                     const sl = sraw.toLowerCase();
-                     if (sl.includes('inform') || sl.includes('info')) panels[panelKey].statusClass = 'badge-info';
-                     else if (sl.includes('warn')) panels[panelKey].statusClass = 'badge-warning';
-                     else if (sl.includes('stop') || sl.includes('error') || sl.includes('critical')) panels[panelKey].statusClass = 'badge-stop';
-                     else panels[panelKey].statusClass = 'badge-default';
-                   }
-                 } catch (_) { panels[panelKey].statusValue = null; panels[panelKey].statusClass = 'badge-default'; }
-               }
-
-
-               // wind speed
-               const wsKey = panels[panelKey].display.find(x => x[0].toLowerCase().includes('wind speed'));
-               panels[panelKey].windSpeed = wsKey ? parseFloat(String(wsKey[1]).replace(/[^0-9.+-eE]/g,'')) : null;
-               // wind dir
-               const wdKey = panels[panelKey].display.find(x => x[0].toLowerCase().includes('wind direction') || x[0].toLowerCase().includes('wind dir'));
-               panels[panelKey].windDir = wdKey ? Math.round(parseFloat(String(wdKey[1]).replace(/[^0-9.+-eE]/g,''))) : null;
-               // nacelle
-               const nacKey = panels[panelKey].display.find(x => x[0].toLowerCase().includes('nacelle'));
-               panels[panelKey].nacelleDir = nacKey ? Math.round(parseFloat(String(nacKey[1]).replace(/[^0-9.+-eE]/g,''))) : null;
-               // update last-seen timestamp for this site/type so switching turbines can continue from here
-               try {
-                 const recTsNow = getRecordTimestampMs(rec);
-                 if (recTsNow !== null) {
-                   // keep the maximum (latest) timestamp seen
-                   const siteKey = `${site}_${type}`;
-                   const prev = lastSeenMs[siteKey];
-                   if (!prev || recTsNow > prev) lastSeenMs[siteKey] = recTsNow;
-                 }
-               } catch(_){}
-               // hide spinner once we have a record applied
-               try { panels[panelKey].loading = false; } catch(_){}
-             }
-           } catch (err) { console.error('SSE parse error', err); }
-         }
-
-         function createConnection(panelKey, path, waitSeconds) {
-          // signature: createConnection(panelKey, path, waitSeconds, sinceMs, startRowid)
-          try { if (panels[panelKey].es) panels[panelKey].es.close(); } catch(_){ }
-          const ws = (waitSeconds !== undefined ? waitSeconds : panels[panelKey].waitSeconds);
-          // allow optional sinceMs as 4th arg and startRowid as 5th arg
-          const sinceMs = arguments.length >= 4 ? arguments[3] : null;
-          const startRowid = arguments.length >= 5 ? arguments[4] : null;
-          // clear any pending reconnect timer for this panel
-          try { if (panels[panelKey].reconnectTimer) { clearTimeout(panels[panelKey].reconnectTimer); panels[panelKey].reconnectTimer = null; } } catch(_){}
-           // build endpoint: if a turbine is selected for this panel, use the panel's byTurbine endpoint
-           const meta = panelList.find(p => p.key === panelKey) || null;
-           let endpoint = path;
-           if (meta && panels[panelKey].turbine) {
-             const t = panels[panelKey].turbine;
-             endpoint = (meta.byTurbine || path) + '/' + t;
-           }
-           const url = buildUrl(endpoint, ws);
-           const basePath = path; // remember the original base path (e.g., '/sse/kelmarsh_all_data') so reconnects call createConnection with same base
-           // If startRowid provided, prefer it. Otherwise decide since_ms: prefer explicit sinceMs, then lastSeenMs for the site/type, then no since
-           if (startRowid !== undefined && startRowid !== null) {
-             try { url.searchParams.set('start_rowid', String(Number(startRowid))); } catch(_){}
-           } else {
-             let finalSince = sinceMs;
-             if (finalSince === null) {
-               try {
-                 const site = panelKey.startsWith('kelmarsh') ? 'kelmarsh' : 'penmanshiel';
-                 const type = panelKey.toLowerCase().includes('status') ? 'status' : 'data';
-                 const siteKey = `${site}_${type}`;
-                 if (lastSeenMs[siteKey]) finalSince = lastSeenMs[siteKey];
-                 else if (siteDates[siteKey]) finalSince = new Date(siteDates[siteKey] + 'T00:00:00').getTime();
-               } catch(_) { finalSince = null; }
-             }
-             if (finalSince !== undefined && finalSince !== null) {
-               try { url.searchParams.set('since_ms', String(Number(finalSince))); } catch(_){ }
-             }
-           }
-           panels[panelKey].es = new EventSource(url.toString());
-            panels[panelKey].es.onopen = () => { panels[panelKey].connected = true; console.log('SSE open', panelKey, url); try { if (panels[panelKey].reconnectTimer) { clearTimeout(panels[panelKey].reconnectTimer); panels[panelKey].reconnectTimer = null; } } catch(_){} };
-            panels[panelKey].es.onmessage = (e) => handleEvent(panelKey, e);
-            // handle named 'end' event emitted by the server (event: end)
-            panels[panelKey].es.addEventListener('end', (e) => {
-              try {
-                console.log('SSE end event', panelKey, e);
-                panels[panelKey].connected = false;
-                // attempt to parse data for diagnostics
-                try { const info = JSON.parse(e.data); console.log('end payload', info); } catch(_){}
-                // close current ES and schedule reconnect
-                try { if (panels[panelKey].es) panels[panelKey].es.close(); } catch(_){}
-                try { if (panels[panelKey].reconnectTimer) { clearTimeout(panels[panelKey].reconnectTimer); panels[panelKey].reconnectTimer = null; } } catch(_){}
-                const meta = panelList.find(p => p.key === panelKey) || null;
-                const path2 = meta ? meta.path : '/sse/next-record';
-                const site = panelKey.startsWith('kelmarsh') ? 'kelmarsh' : 'penmanshiel';
-                const type = panelKey.toLowerCase().includes('status') ? 'status' : 'data';
-                const siteKey = `${site}_${type}`;
-                const since = lastSeenMs[siteKey] || (siteDates[siteKey] ? new Date(siteDates[siteKey] + 'T00:00:00').getTime() : null);
-                panels[panelKey].reconnectTimer = setTimeout(() => { try { createConnection(panelKey, basePath, panels[panelKey].waitSeconds, since); } catch(_){} }, 1500);
-              } catch(_){}
-            });
-            panels[panelKey].es.onerror = (ev) => {
-              panels[panelKey].connected = false;
-              console.error('SSE error', panelKey, ev);
-              // schedule reconnect after a short delay using lastSeenMs/siteDates
-              try {
-                if (panels[panelKey].reconnectTimer) { clearTimeout(panels[panelKey].reconnectTimer); panels[panelKey].reconnectTimer = null; }
-                const meta = panelList.find(p => p.key === panelKey) || null;
-                const path2 = meta ? meta.path : '/sse/next-record';
-                const site = panelKey.startsWith('kelmarsh') ? 'kelmarsh' : 'penmanshiel';
-                const type = panelKey.toLowerCase().includes('status') ? 'status' : 'data';
-                const siteKey = `${site}_${type}`;
-                const since = lastSeenMs[siteKey] || (siteDates[siteKey] ? new Date(siteDates[siteKey] + 'T00:00:00').getTime() : null);
-                panels[panelKey].reconnectTimer = setTimeout(() => {
-                  try { createConnection(panelKey, path2, panels[panelKey].waitSeconds, since); } catch(_){ }
-                }, 1500);
-              } catch(_){ }
-            };
-           }
+        // start overview initially
+        if (overviewEnabled.value) startOverview();
 
         function applyPanel(panelKey, path) {
            // reconnect using the panel's waitSeconds and current turbine selection
@@ -549,9 +437,11 @@
 
          onBeforeUnmount(() => {
            Object.keys(panels).forEach(k => { try { if (panels[k].es) panels[k].es.close(); } catch(_){} });
+          // stop overview EventSources
+          try { stopOverview(); } catch(_){}
          });
 
-         return { panelList, panels, visiblePanels, activeSite, setSite, siteDates, applyDate, clearDate, applyPanel, selectTurbine };
+        return { panelList, panels, visiblePanels, activeSite, setSite, siteDates, applyDate, clearDate, applyPanel, selectTurbine, overviewEnabled, toggleOverview, overviewData, overviewTurbineRange, rot };
       }
     }).mount('#app');
    </script>
