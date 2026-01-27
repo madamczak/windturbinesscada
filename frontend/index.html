@@ -6,6 +6,8 @@
   <title>Multi SSE Viewer</title>
   <style>
     body { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial; background:#f7fafc; color:#0f172a; padding:20px }
+    /* visually indicate disabled turbine buttons */
+    button[disabled] { opacity: 0.5; cursor: not-allowed; }
     .grid { display:grid; grid-template-columns:repeat(2, 1fr); gap:16px; max-width:1200px; margin:0 auto }
     .card { background:#fff; border-radius:10px; padding:14px; box-shadow:0 4px 18px rgba(2,6,23,0.06) }
     h2 { margin:0 0 8px; font-size:16px }
@@ -116,6 +118,22 @@
         <div v-if="panel.key === 'kelmarsh_all_status' || panel.key === 'penmanshiel_all_status'" style="margin-top:10px">
           <span class="badge" :class="panels[panel.key].statusClass">{{ panels[panel.key].statusValue }}</span>
         </div>
+
+        <!-- turbine selection UI per panel -->
+        <div v-if="panel.minT !== undefined && panel.maxT !== undefined" style="margin-top:12px">
+          <span class="small" style="white-space:nowrap">Turbine:</span>
+          <div class="controls" style="gap:4px">
+            <button v-for="t in Array(panel.maxT - panel.minT + 1).fill().map((_,i)=>panel.minT+i)"
+                    :key="t"
+                    class="toggle-btn"
+                    :class="{ active: panels[panel.key].turbine === t }"
+                    :disabled="panel.key==='penmanshiel_data' && t===3"
+                    @click="selectTurbine(panel.key, t, panel.path)"
+                    :title="(panel.key==='penmanshiel_data' && t===3) ? 'Disabled for Penmanshiel Data' : ''">
+               Turbine {{ t }}
+             </button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -127,23 +145,25 @@
     createApp({
       setup() {
         const panelList = [
-          { key: 'kelmarsh_all_data', title: 'Kelmarsh Data', path: '/sse/kelmarsh_all_data' },
-          { key: 'kelmarsh_all_status', title: 'Kelmarsh Status', path: '/sse/kelmarsh_all_status' },
-          { key: 'penmanshiel_data', title: 'Penmanshiel Data', path: '/sse/next-record' },
-          { key: 'penmanshiel_all_status', title: 'Penmanshiel Status', path: '/sse/penmanshiel_all_status' }
+          { key: 'kelmarsh_all_data', title: 'Kelmarsh Data', path: '/sse/kelmarsh_all_data', byTurbine: '/sse/by-turbine/kelmarsh_data', minT: 1, maxT: 6 },
+          { key: 'kelmarsh_all_status', title: 'Kelmarsh Status', path: '/sse/kelmarsh_all_status', byTurbine: '/sse/by-turbine/kelmarsh_status', minT: 1, maxT: 6 },
+          { key: 'penmanshiel_data', title: 'Penmanshiel Data', path: '/sse/next-record', byTurbine: '/sse/by-turbine/penmanshiel_data', minT: 1, maxT: 15 },
+          { key: 'penmanshiel_all_status', title: 'Penmanshiel Status', path: '/sse/penmanshiel_all_status', byTurbine: '/sse/by-turbine/penmanshiel_status', minT: 1, maxT: 15 }
         ];
 
         const panels = reactive({
-          kelmarsh_all_data: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false },
-          kelmarsh_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false },
-          penmanshiel_data: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false },
-          penmanshiel_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false }
+          kelmarsh_all_data: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false, turbine: null, reconnectTimer: null },
+          kelmarsh_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false, turbine: null, reconnectTimer: null },
+          penmanshiel_data: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false, turbine: null, reconnectTimer: null },
+          penmanshiel_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false, turbine: null, reconnectTimer: null }
         });
 
         // per-panel-type selected start dates (YYYY-MM-DD) — null means no filtering
         const siteDates = reactive({ kelmarsh_data: null, kelmarsh_status: null, penmanshiel_data: null, penmanshiel_status: null });
         // track whether we've set the initial date for each panel type from incoming data
         const siteInitialized = reactive({ kelmarsh_data: false, kelmarsh_status: false, penmanshiel_data: false, penmanshiel_status: false });
+        // per-panel-type last seen timestamp in ms (used when switching turbines to continue from last time)
+        const lastSeenMs = reactive({ kelmarsh_data: null, kelmarsh_status: null, penmanshiel_data: null, penmanshiel_status: null });
 
         function formatDateLocalYYYYMMDD(ms) {
           const d = new Date(ms);
@@ -304,7 +324,25 @@
               }
                // if server sent a non-record control message (e.g., end_of_data), stop loading
                if (obj.info) {
-                 try { panels[panelKey].loading = false; } catch(_){}
+                 try { panels[panelKey].loading = false; } catch(_){ }
+                 // if end_of_data, close the current EventSource and schedule a reconnect
+                 if (obj.info === 'end_of_data') {
+                   try { if (panels[panelKey].es) panels[panelKey].es.close(); } catch(_){}
+                   // clear any existing timer
+                   try { if (panels[panelKey].reconnectTimer) { clearTimeout(panels[panelKey].reconnectTimer); panels[panelKey].reconnectTimer = null; } } catch(_){}
+                   // schedule reconnect after a short delay using lastSeenMs/siteDates as since_ms
+                   try {
+                     const meta = panelList.find(p => p.key === panelKey) || null;
+                     const path = meta ? meta.path : '/sse/next-record';
+                     const site = panelKey.startsWith('kelmarsh') ? 'kelmarsh' : 'penmanshiel';
+                     const type = panelKey.toLowerCase().includes('status') ? 'status' : 'data';
+                     const siteKey = `${site}_${type}`;
+                     const since = lastSeenMs[siteKey] || (siteDates[siteKey] ? new Date(siteDates[siteKey] + 'T00:00:00').getTime() : null);
+                     panels[panelKey].reconnectTimer = setTimeout(() => {
+                       try { createConnection(panelKey, basePath, panels[panelKey].waitSeconds, since); } catch(_){}
+                     }, 1500);
+                   } catch(_){}
+                 }
                  return;
                }
                const rec = obj.record;
@@ -368,6 +406,16 @@
                // nacelle
                const nacKey = panels[panelKey].display.find(x => x[0].toLowerCase().includes('nacelle'));
                panels[panelKey].nacelleDir = nacKey ? Math.round(parseFloat(String(nacKey[1]).replace(/[^0-9.+-eE]/g,''))) : null;
+               // update last-seen timestamp for this site/type so switching turbines can continue from here
+               try {
+                 const recTsNow = getRecordTimestampMs(rec);
+                 if (recTsNow !== null) {
+                   // keep the maximum (latest) timestamp seen
+                   const siteKey = `${site}_${type}`;
+                   const prev = lastSeenMs[siteKey];
+                   if (!prev || recTsNow > prev) lastSeenMs[siteKey] = recTsNow;
+                 }
+               } catch(_){}
                // hide spinner once we have a record applied
                try { panels[panelKey].loading = false; } catch(_){}
              }
@@ -375,41 +423,138 @@
          }
 
          function createConnection(panelKey, path, waitSeconds) {
-          // signature: createConnection(panelKey, path, waitSeconds, sinceMs)
+          // signature: createConnection(panelKey, path, waitSeconds, sinceMs, startRowid)
           try { if (panels[panelKey].es) panels[panelKey].es.close(); } catch(_){ }
           const ws = (waitSeconds !== undefined ? waitSeconds : panels[panelKey].waitSeconds);
-          // allow optional sinceMs as last argument on the call
+          // allow optional sinceMs as 4th arg and startRowid as 5th arg
           const sinceMs = arguments.length >= 4 ? arguments[3] : null;
-          const url = buildUrl(path, ws);
-          if (sinceMs !== undefined && sinceMs !== null) {
-            try { url.searchParams.set('since_ms', String(Number(sinceMs))); } catch(_){}
-          }
+          const startRowid = arguments.length >= 5 ? arguments[4] : null;
+          // clear any pending reconnect timer for this panel
+          try { if (panels[panelKey].reconnectTimer) { clearTimeout(panels[panelKey].reconnectTimer); panels[panelKey].reconnectTimer = null; } } catch(_){}
+           // build endpoint: if a turbine is selected for this panel, use the panel's byTurbine endpoint
+           const meta = panelList.find(p => p.key === panelKey) || null;
+           let endpoint = path;
+           if (meta && panels[panelKey].turbine) {
+             const t = panels[panelKey].turbine;
+             endpoint = (meta.byTurbine || path) + '/' + t;
+           }
+           const url = buildUrl(endpoint, ws);
+           const basePath = path; // remember the original base path (e.g., '/sse/kelmarsh_all_data') so reconnects call createConnection with same base
+           // If startRowid provided, prefer it. Otherwise decide since_ms: prefer explicit sinceMs, then lastSeenMs for the site/type, then no since
+           if (startRowid !== undefined && startRowid !== null) {
+             try { url.searchParams.set('start_rowid', String(Number(startRowid))); } catch(_){}
+           } else {
+             let finalSince = sinceMs;
+             if (finalSince === null) {
+               try {
+                 const site = panelKey.startsWith('kelmarsh') ? 'kelmarsh' : 'penmanshiel';
+                 const type = panelKey.toLowerCase().includes('status') ? 'status' : 'data';
+                 const siteKey = `${site}_${type}`;
+                 if (lastSeenMs[siteKey]) finalSince = lastSeenMs[siteKey];
+                 else if (siteDates[siteKey]) finalSince = new Date(siteDates[siteKey] + 'T00:00:00').getTime();
+               } catch(_) { finalSince = null; }
+             }
+             if (finalSince !== undefined && finalSince !== null) {
+               try { url.searchParams.set('since_ms', String(Number(finalSince))); } catch(_){ }
+             }
+           }
            panels[panelKey].es = new EventSource(url.toString());
-            panels[panelKey].es.onopen = () => { panels[panelKey].connected = true; console.log('SSE open', panelKey, url); };
+            panels[panelKey].es.onopen = () => { panels[panelKey].connected = true; console.log('SSE open', panelKey, url); try { if (panels[panelKey].reconnectTimer) { clearTimeout(panels[panelKey].reconnectTimer); panels[panelKey].reconnectTimer = null; } } catch(_){} };
             panels[panelKey].es.onmessage = (e) => handleEvent(panelKey, e);
-            panels[panelKey].es.onerror = (ev) => { panels[panelKey].connected = false; console.error('SSE error', panelKey, ev); };
-          }
+            // handle named 'end' event emitted by the server (event: end)
+            panels[panelKey].es.addEventListener('end', (e) => {
+              try {
+                console.log('SSE end event', panelKey, e);
+                panels[panelKey].connected = false;
+                // attempt to parse data for diagnostics
+                try { const info = JSON.parse(e.data); console.log('end payload', info); } catch(_){}
+                // close current ES and schedule reconnect
+                try { if (panels[panelKey].es) panels[panelKey].es.close(); } catch(_){}
+                try { if (panels[panelKey].reconnectTimer) { clearTimeout(panels[panelKey].reconnectTimer); panels[panelKey].reconnectTimer = null; } } catch(_){}
+                const meta = panelList.find(p => p.key === panelKey) || null;
+                const path2 = meta ? meta.path : '/sse/next-record';
+                const site = panelKey.startsWith('kelmarsh') ? 'kelmarsh' : 'penmanshiel';
+                const type = panelKey.toLowerCase().includes('status') ? 'status' : 'data';
+                const siteKey = `${site}_${type}`;
+                const since = lastSeenMs[siteKey] || (siteDates[siteKey] ? new Date(siteDates[siteKey] + 'T00:00:00').getTime() : null);
+                panels[panelKey].reconnectTimer = setTimeout(() => { try { createConnection(panelKey, basePath, panels[panelKey].waitSeconds, since); } catch(_){} }, 1500);
+              } catch(_){}
+            });
+            panels[panelKey].es.onerror = (ev) => {
+              panels[panelKey].connected = false;
+              console.error('SSE error', panelKey, ev);
+              // schedule reconnect after a short delay using lastSeenMs/siteDates
+              try {
+                if (panels[panelKey].reconnectTimer) { clearTimeout(panels[panelKey].reconnectTimer); panels[panelKey].reconnectTimer = null; }
+                const meta = panelList.find(p => p.key === panelKey) || null;
+                const path2 = meta ? meta.path : '/sse/next-record';
+                const site = panelKey.startsWith('kelmarsh') ? 'kelmarsh' : 'penmanshiel';
+                const type = panelKey.toLowerCase().includes('status') ? 'status' : 'data';
+                const siteKey = `${site}_${type}`;
+                const since = lastSeenMs[siteKey] || (siteDates[siteKey] ? new Date(siteDates[siteKey] + 'T00:00:00').getTime() : null);
+                panels[panelKey].reconnectTimer = setTimeout(() => {
+                  try { createConnection(panelKey, path2, panels[panelKey].waitSeconds, since); } catch(_){ }
+                }, 1500);
+              } catch(_){ }
+            };
+           }
 
         function applyPanel(panelKey, path) {
-          // reconnect using the panel's waitSeconds
+           // reconnect using the panel's waitSeconds and current turbine selection
           createConnection(panelKey, path, panels[panelKey].waitSeconds);
+         }
+
+        // add selectTurbine to immediately apply turbine selection
+        function selectTurbine(panelKey, t, path) {
+          panels[panelKey].turbine = (t === null ? null : t);
+          // When switching turbines, prefer to continue from last seen timestamp for the site/type
+          try {
+            const site = panelKey.startsWith('kelmarsh') ? 'kelmarsh' : 'penmanshiel';
+            const type = panelKey.toLowerCase().includes('status') ? 'status' : 'data';
+            const siteKey = `${site}_${type}`;
+            const since = lastSeenMs[siteKey] || (siteDates[siteKey] ? new Date(siteDates[siteKey] + 'T00:00:00').getTime() : null);
+            // If we selected a turbine (not All) try to resolve a start_rowid on the server to avoid misses
+            const meta = panelList.find(p => p.key === panelKey) || null;
+            const source = meta && meta.byTurbine ? meta.byTurbine.split('/').filter(Boolean).pop() : null;
+            if (t !== null && source) {
+              const resolveUrl = new URL('/sse/resolve-rowid', location.origin === 'null' ? 'http://127.0.0.1:8000' : location.origin);
+              resolveUrl.searchParams.set('source', source);
+              resolveUrl.searchParams.set('turbine', String(t));
+              if (since !== null) resolveUrl.searchParams.set('since_ms', String(Number(since)));
+              fetch(resolveUrl.toString()).then(r => r.json()).then(js => {
+                const rid = (js && js.rowid) ? js.rowid : null;
+                if (rid !== null) {
+                  createConnection(panelKey, path, panels[panelKey].waitSeconds, null, rid);
+                } else {
+                  // fallback to since_ms-based reconnect
+                  createConnection(panelKey, path, panels[panelKey].waitSeconds, since);
+                }
+              }).catch(_=>{
+                // on error fallback
+                createConnection(panelKey, path, panels[panelKey].waitSeconds, since);
+              });
+            } else {
+              // All selected or no source mapping, just reconnect with since
+              createConnection(panelKey, path, panels[panelKey].waitSeconds, since);
+            }
+          } catch (_) { try { createConnection(panelKey, path, panels[panelKey].waitSeconds); } catch(_){} }
         }
 
          onMounted(() => {
-          // open connections for all panels so inactive sites continue to receive updates in background
-          panelList.forEach(p => {
+           // open connections for all panels so inactive sites continue to receive updates in background
+           panelList.forEach(p => {
             try { createConnection(p.key, p.path); } catch(_){ }
+           });
           });
-         });
 
          onBeforeUnmount(() => {
            Object.keys(panels).forEach(k => { try { if (panels[k].es) panels[k].es.close(); } catch(_){} });
          });
 
-         return { panelList, panels, visiblePanels, activeSite, setSite, siteDates, applyDate, clearDate };
+         return { panelList, panels, visiblePanels, activeSite, setSite, siteDates, applyDate, clearDate, applyPanel, selectTurbine };
       }
     }).mount('#app');
-  </script>
-</body>
-</html>
+   </script>
+ </body>
+ </html>
 

@@ -33,6 +33,13 @@ KELMARSH_DATA_DB = BASE_DB_DIR / "kelmarsh_all_data.db"
 PENMANSHIEL_STATUS_DB = BASE_DB_DIR / "penmanshiel_all_status.db"
 KELMARSH_STATUS_DB = BASE_DB_DIR / "kelmarsh_all_status.db"
 
+# New: per-turbine DBs directory (created by previous scripts)
+DATA_BY_TURBINE_DIR = BASE_DB_DIR / "data_by_turbine"
+PENMANSHIEL_DATA_BY_TURBINE_DB = DATA_BY_TURBINE_DIR / "penmanshiel_data_by_turbine.db"
+PENMANSHIEL_STATUS_BY_TURBINE_DB = DATA_BY_TURBINE_DIR / "penmanshiel_status_by_turbine.db"
+KELMARSH_DATA_BY_TURBINE_DB = DATA_BY_TURBINE_DIR / "kelmarsh_data_by_turbine.db"
+KELMARSH_STATUS_BY_TURBINE_DB = DATA_BY_TURBINE_DIR / "kelmarsh_status_by_turbine.db"
+
 app = FastAPI(title="SSE multi-source API")
 
 # allow all origins for convenience during development (adjust in production)
@@ -233,6 +240,112 @@ async def sse_kelmarsh_status(request: Request,
                                since_ms: Optional[int] = Query(None, description="Optional start timestamp in milliseconds since epoch")):
     gen = stream_table_rows_from_db(KELMARSH_STATUS_DB, None, request, start_rowid, wait_seconds, since_ms)
     return StreamingResponse(gen, media_type="text/event-stream")
+
+
+# New endpoints: stream per-turbine tables from the *_by_turbine DBs
+@app.get("/sse/by-turbine/penmanshiel_data/{turbine}")
+async def sse_penmanshiel_data_by_turbine(request: Request,
+                                          turbine: int,
+                                          start_rowid: Optional[int] = Query(None),
+                                          wait_seconds: float = Query(DEFAULT_SEND_INTERVAL_SECONDS, ge=0.0),
+                                          since_ms: Optional[int] = Query(None, description="Optional start timestamp in milliseconds since epoch")):
+    if turbine < 1 or turbine > 15:
+        return StreamingResponse((sse_encode(json.dumps({"error": "invalid_turbine_range", "min": 1, "max": 15}), event="error") for _ in ()), media_type="text/event-stream")
+    tbl = f"turbine_{turbine}"
+    gen = stream_table_rows_from_db(PENMANSHIEL_DATA_BY_TURBINE_DB, tbl, request, start_rowid, wait_seconds, since_ms)
+    return StreamingResponse(gen, media_type="text/event-stream")
+
+
+@app.get("/sse/by-turbine/penmanshiel_status/{turbine}")
+async def sse_penmanshiel_status_by_turbine(request: Request,
+                                            turbine: int,
+                                            start_rowid: Optional[int] = Query(None),
+                                            wait_seconds: float = Query(DEFAULT_SEND_INTERVAL_SECONDS, ge=0.0),
+                                            since_ms: Optional[int] = Query(None, description="Optional start timestamp in milliseconds since epoch")):
+    if turbine < 1 or turbine > 15:
+        return StreamingResponse((sse_encode(json.dumps({"error": "invalid_turbine_range", "min": 1, "max": 15}), event="error") for _ in ()), media_type="text/event-stream")
+    tbl = f"turbine_{turbine}"
+    gen = stream_table_rows_from_db(PENMANSHIEL_STATUS_BY_TURBINE_DB, tbl, request, start_rowid, wait_seconds, since_ms)
+    return StreamingResponse(gen, media_type="text/event-stream")
+
+
+@app.get("/sse/by-turbine/kelmarsh_data/{turbine}")
+async def sse_kelmarsh_data_by_turbine(request: Request,
+                                       turbine: int,
+                                       start_rowid: Optional[int] = Query(None),
+                                       wait_seconds: float = Query(DEFAULT_SEND_INTERVAL_SECONDS, ge=0.0),
+                                       since_ms: Optional[int] = Query(None, description="Optional start timestamp in milliseconds since epoch")):
+    if turbine < 1 or turbine > 6:
+        return StreamingResponse((sse_encode(json.dumps({"error": "invalid_turbine_range", "min": 1, "max": 6}), event="error") for _ in ()), media_type="text/event-stream")
+    tbl = f"turbine_{turbine}"
+    gen = stream_table_rows_from_db(KELMARSH_DATA_BY_TURBINE_DB, tbl, request, start_rowid, wait_seconds, since_ms)
+    return StreamingResponse(gen, media_type="text/event-stream")
+
+
+@app.get("/sse/by-turbine/kelmarsh_status/{turbine}")
+async def sse_kelmarsh_status_by_turbine(request: Request,
+                                         turbine: int,
+                                         start_rowid: Optional[int] = Query(None),
+                                         wait_seconds: float = Query(DEFAULT_SEND_INTERVAL_SECONDS, ge=0.0),
+                                         since_ms: Optional[int] = Query(None, description="Optional start timestamp in milliseconds since epoch")):
+    if turbine < 1 or turbine > 6:
+        return StreamingResponse((sse_encode(json.dumps({"error": "invalid_turbine_range", "min": 1, "max": 6}), event="error") for _ in ()), media_type="text/event-stream")
+    tbl = f"turbine_{turbine}"
+    gen = stream_table_rows_from_db(KELMARSH_STATUS_BY_TURBINE_DB, tbl, request, start_rowid, wait_seconds, since_ms)
+    return StreamingResponse(gen, media_type="text/event-stream")
+
+
+@app.get("/sse/resolve-rowid")
+async def resolve_rowid(source: str = Query(..., description="One of: penmanshiel_data, penmanshiel_status, kelmarsh_data, kelmarsh_status"),
+                        turbine: int = Query(..., ge=1),
+                        since_ms: Optional[int] = Query(None, description="timestamp in ms")):
+    """Resolve the first rowid in the given turbine table where the likely timestamp column is >= since_ms.
+    Returns JSON: {"rowid": <int> } or {"rowid": null} on not found.
+    """
+    # map source to DB path
+    src_map = {
+        'penmanshiel_data': PENMANSHIEL_DATA_BY_TURBINE_DB,
+        'penmanshiel_status': PENMANSHIEL_STATUS_BY_TURBINE_DB,
+        'kelmarsh_data': KELMARSH_DATA_BY_TURBINE_DB,
+        'kelmarsh_status': KELMARSH_STATUS_BY_TURBINE_DB,
+    }
+    if source not in src_map:
+        return {"error": "unknown_source", "source": source}
+    db_path = src_map[source]
+    if not db_path.exists():
+        return {"error": "db_not_found", "path": str(db_path)}
+
+    tbl = f"turbine_{turbine}"
+    qdb = str(db_path)
+    async with aiosqlite.connect(qdb) as conn:
+        # get columns
+        qtbl = tbl.replace("'", "''")
+        pragma = f"PRAGMA table_info('{qtbl}')"
+        cols = []
+        try:
+            async with conn.execute(pragma) as cur:
+                async for r in cur:
+                    cols.append(r[1])
+        except Exception:
+            return {"error": "no_such_table", "table": tbl}
+
+        if since_ms is None:
+            return {"rowid": None}
+
+        # find candidate timestamp-like columns
+        cand_cols = [c for c in cols if re.search(r"timestamp|datetime|date|time|created_at|ts", c, re.IGNORECASE)]
+        resolved_rowid = None
+        for col in cand_cols:
+            try:
+                q = f"SELECT rowid FROM '{qtbl}' WHERE ((CAST(\"{col}\" AS INTEGER) >= ?) OR ((CAST(\"{col}\" AS INTEGER) * 1000) >= ?) OR ((strftime('%s', \"{col}\") IS NOT NULL) AND (strftime('%s', \"{col}\") * 1000 >= ?))) ORDER BY rowid ASC LIMIT 1"
+                async with conn.execute(q, (since_ms, since_ms, since_ms)) as cur:
+                    r = await cur.fetchone()
+                    if r:
+                        resolved_rowid = int(r[0])
+                        break
+            except Exception:
+                continue
+        return {"rowid": resolved_rowid}
 
 
 if __name__ == '__main__':
