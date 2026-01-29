@@ -538,6 +538,156 @@ async def sse_kelmarsh_combined(request: Request,
     return StreamingResponse(gen, media_type="text/event-stream")
 
 
+async def stream_combined_penmanshiel(turbine: int, request: Request, data_interval: float) -> AsyncGenerator[str, None]:
+    """Stream combined data and status for a single Penmanshiel turbine.
+
+    - Data updates every data_interval seconds (default 1 second)
+    - Status updates are synchronized with data timestamps:
+      The next status is shown when the current data timestamp >= status's Timestamp end
+    """
+    data_db = str(PENMANSHIEL_DATA_BY_TURBINE_DB)
+    status_db = str(PENMANSHIEL_STATUS_BY_TURBINE_DB)
+    tbl = f"turbine_{turbine}"
+
+    if not PENMANSHIEL_DATA_BY_TURBINE_DB.exists() or not PENMANSHIEL_STATUS_BY_TURBINE_DB.exists():
+        yield sse_encode(json.dumps({"error": "db_not_found"}), event="error")
+        return
+
+    try:
+        data_ws = max(0.1, float(data_interval))
+    except Exception:
+        data_ws = 1.0
+
+    data_rowid = 0
+    status_rowid = 0
+
+    # Track the current status's end timestamp - when data reaches this time, fetch next status
+    current_status_end_dt: Optional[datetime] = None
+    current_status_record = None
+
+    async with aiosqlite.connect(data_db) as data_conn, aiosqlite.connect(status_db) as status_conn:
+        # Get column names for both tables
+        data_cols = []
+        status_cols = []
+
+        async with data_conn.execute(f"PRAGMA table_info('{tbl}')") as cur:
+            async for r in cur:
+                data_cols.append(r[1])
+
+        async with status_conn.execute(f"PRAGMA table_info('{tbl}')") as cur:
+            async for r in cur:
+                status_cols.append(r[1])
+
+        if not data_cols or not status_cols:
+            yield sse_encode(json.dumps({"error": "table_not_found", "table": tbl}), event="error")
+            return
+
+        # Find timestamp column names
+        data_ts_col = next((col for col in data_cols if 'date' in col.lower() or 'time' in col.lower() or 'timestamp' in col.lower()), None)
+        status_end_col = next((col for col in status_cols if 'timestamp end' in col.lower()), None)
+
+        # Fetch the first status record immediately
+        async with status_conn.execute(f"SELECT rowid, * FROM '{tbl}' WHERE rowid > ? ORDER BY rowid ASC LIMIT 1", (status_rowid,)) as cur:
+            row = await cur.fetchone()
+            if row:
+                status_rowid = row[0]
+                values = row[1:]
+                current_status_record = {col: (None if val is None else str(val)) for col, val in zip(status_cols, values)}
+                # Get the end timestamp for this status
+                if status_end_col and current_status_record.get(status_end_col):
+                    current_status_end_dt = parse_timestamp_to_datetime(current_status_record[status_end_col])
+
+        # Send initial status immediately
+        first_payload = {
+            "turbine": turbine,
+            "data": None,
+            "status": {"rowid": status_rowid, "record": current_status_record, "updated": True} if current_status_record else None
+        }
+        yield sse_encode(json.dumps(first_payload, ensure_ascii=False))
+
+        while True:
+            # Check disconnect
+            try:
+                if await request.is_disconnected():
+                    break
+            except Exception:
+                pass
+
+            # Fetch next data record
+            data_record = None
+            current_data_dt: Optional[datetime] = None
+            async with data_conn.execute(f"SELECT rowid, * FROM '{tbl}' WHERE rowid > ? ORDER BY rowid ASC LIMIT 1", (data_rowid,)) as cur:
+                row = await cur.fetchone()
+                if row:
+                    data_rowid = row[0]
+                    values = row[1:]
+                    data_record = {col: (None if val is None else str(val)) for col, val in zip(data_cols, values)}
+                    # Get the current data timestamp
+                    if data_ts_col and data_record.get(data_ts_col):
+                        current_data_dt = parse_timestamp_to_datetime(data_record[data_ts_col])
+
+            # Check if we should advance to the next status record
+            # This happens when the current data timestamp >= current status's end timestamp
+            status_updated = False
+            if current_data_dt and current_status_end_dt and current_data_dt >= current_status_end_dt:
+                # Fetch next status record(s) until we find one whose end time is > current data time
+                while True:
+                    async with status_conn.execute(f"SELECT rowid, * FROM '{tbl}' WHERE rowid > ? ORDER BY rowid ASC LIMIT 1", (status_rowid,)) as cur:
+                        row = await cur.fetchone()
+                        if row:
+                            status_rowid = row[0]
+                            values = row[1:]
+                            current_status_record = {col: (None if val is None else str(val)) for col, val in zip(status_cols, values)}
+                            status_updated = True
+                            # Get the end timestamp for this status
+                            if status_end_col and current_status_record.get(status_end_col):
+                                current_status_end_dt = parse_timestamp_to_datetime(current_status_record[status_end_col])
+                                # If this status's end time is still <= current data time, continue to next
+                                if current_status_end_dt and current_data_dt >= current_status_end_dt:
+                                    continue  # Fetch next status
+                            break  # Found a status with end time > current data time, or no end time
+                        else:
+                            # No more status records
+                            current_status_end_dt = None
+                            break
+
+            # Send combined payload
+            payload = {
+                "turbine": turbine,
+                "data": {"rowid": data_rowid, "record": data_record} if data_record else None,
+                "status": {"rowid": status_rowid, "record": current_status_record, "updated": status_updated} if status_updated else None
+            }
+            yield sse_encode(json.dumps(payload, ensure_ascii=False))
+
+            # Wait for data interval
+            await asyncio.sleep(data_ws)
+
+            # If data stream exhausted, send end event and break
+            if data_record is None:
+                yield sse_encode(json.dumps({"info": "end_of_data", "turbine": turbine}), event="end")
+                break
+
+
+@app.get("/sse/penmanshiel-combined/{turbine}")
+async def sse_penmanshiel_combined(request: Request,
+                                    turbine: int,
+                                    data_interval: float = Query(1.0, ge=0.1, description="Seconds between data updates")):
+    """Stream combined data and status for a single Penmanshiel turbine.
+
+    - Data updates every data_interval seconds (default 1 second)
+    - Status updates are synchronized with data timestamps:
+      The next status is shown when the current data timestamp >= current status's Timestamp end
+    """
+    if turbine < 1 or turbine > 15:
+        return StreamingResponse(
+            (sse_encode(json.dumps({"error": "invalid_turbine_range", "min": 1, "max": 15}), event="error") for _ in ()),
+            media_type="text/event-stream"
+        )
+    # Skip turbine 3 which has no data
+    gen = stream_combined_penmanshiel(turbine, request, data_interval)
+    return StreamingResponse(gen, media_type="text/event-stream")
+
+
 if __name__ == '__main__':
     # Allow running `python api/main.py` or running the file from PyCharm 'Run'
     try:

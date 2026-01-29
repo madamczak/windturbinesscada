@@ -47,11 +47,11 @@
 
     <!-- All Turbines Data + Status View -->
     <div id="turbine-view-section" style="max-width:1200px; margin:10px auto 18px;">
-      <div style="font-weight:700; margin-bottom:12px;">Kelmarsh Turbines - Live Data & Status</div>
+      <div style="font-weight:700; margin-bottom:12px;">{{ activeSite === 'kelmarsh' ? 'Kelmarsh' : 'Penmanshiel' }} Turbines - Live Data & Status</div>
 
-      <!-- Grid showing all 6 turbines -->
+      <!-- Grid showing turbines (6 for Kelmarsh, 15 for Penmanshiel but skip 3) -->
       <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px;">
-        <div v-for="t in 6" :key="'turbine-'+t" class="card" style="padding:12px;">
+        <div v-for="t in turbineRange" :key="'turbine-'+t" class="card" style="padding:12px;">
           <h2 style="margin:0 0 10px; font-size:15px; text-align:center; border-bottom:1px solid #e5e7eb; padding-bottom:8px;">Turbine {{ t }}</h2>
 
           <!-- Data section -->
@@ -215,10 +215,23 @@
         });
 
         // All turbines data - reactive objects for each turbine (using combined endpoint)
-        const turbineData = reactive({});  // keys: 1-6 -> { nacelle, wind, ts }
-        const turbineStatus = reactive({}); // keys: 1-6 -> { timestampStart, message }
+        const turbineData = reactive({});  // keys: turbine number -> { nacelle, wind, ts }
+        const turbineStatus = reactive({}); // keys: turbine number -> { timestampStart, timestampEnd, message, duration }
         const turbineES = {};  // EventSource per turbine
         const turbineReconnect = {}; // reconnect timers
+
+        // activeSite controls which wind farm is displayed
+        const activeSite = ref('kelmarsh');
+
+        // Computed turbine range based on active site
+        const turbineRange = computed(() => {
+          if (activeSite.value === 'kelmarsh') {
+            return [1, 2, 3, 4, 5, 6];
+          } else {
+            // Penmanshiel: 1-15 but skip turbine 3 (no data)
+            return [1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+          }
+        });
 
         function buildUrl(path, waitSeconds) {
           const base = (location.origin === 'null' ? 'http://127.0.0.1:8000' : location.origin);
@@ -227,12 +240,15 @@
           return u;
         }
 
-        function startCombinedStream(turbine) {
+        function startCombinedStream(turbine, site) {
           // Close existing stream for this turbine
           try { if (turbineES[turbine]) turbineES[turbine].close(); } catch(_){}
           try { if (turbineReconnect[turbine]) clearTimeout(turbineReconnect[turbine]); } catch(_){}
 
-          const url = buildUrl('/sse/kelmarsh-combined/' + turbine, 1);
+          const endpoint = site === 'kelmarsh'
+            ? '/sse/kelmarsh-combined/' + turbine
+            : '/sse/penmanshiel-combined/' + turbine;
+          const url = buildUrl(endpoint, 1);
           const es = new EventSource(url.toString());
           turbineES[turbine] = es;
 
@@ -275,21 +291,46 @@
 
           es.onerror = () => {
             console.error('combined ES error', turbine);
-            turbineReconnect[turbine] = setTimeout(() => startCombinedStream(turbine), 2000);
+            const currentSite = activeSite.value;
+            turbineReconnect[turbine] = setTimeout(() => startCombinedStream(turbine, currentSite), 2000);
           };
         }
 
         function startAllTurbineStreams() {
-          for (let t = 1; t <= 6; t++) {
-            startCombinedStream(t);
+          const site = activeSite.value;
+          const range = site === 'kelmarsh' ? [1,2,3,4,5,6] : [1,2,4,5,6,7,8,9,10,11,12,13,14,15];
+          for (const t of range) {
+            startCombinedStream(t, site);
           }
         }
 
         function stopAllTurbineStreams() {
-          for (let t = 1; t <= 6; t++) {
+          // Stop all possible turbines (1-15)
+          for (let t = 1; t <= 15; t++) {
             try { if (turbineES[t]) turbineES[t].close(); } catch(_){}
             try { if (turbineReconnect[t]) clearTimeout(turbineReconnect[t]); } catch(_){}
+            delete turbineES[t];
+            delete turbineReconnect[t];
           }
+          // Clear data
+          for (let t = 1; t <= 15; t++) {
+            delete turbineData[t];
+            delete turbineStatus[t];
+          }
+        }
+
+        function setSite(name) {
+          if (name !== 'kelmarsh' && name !== 'penmanshiel') return;
+          if (activeSite.value === name) return; // No change
+
+          // Stop current streams
+          stopAllTurbineStreams();
+
+          // Change site
+          activeSite.value = name;
+
+          // Start new streams for the selected site
+          startAllTurbineStreams();
         }
 
         // Start all turbine streams on init
@@ -353,14 +394,6 @@
           });
         }
 
-        // activeSite controls which group's panels are visible: 'kelmarsh' or 'penmanshiel'
-        const activeSite = ref('kelmarsh');
-
-        function setSite(name) {
-          // only change the active site used for visibility; keep SSE connections running in background
-          if (name !== 'kelmarsh' && name !== 'penmanshiel') return;
-          activeSite.value = name;
-        }
 
         const visiblePanels = computed(() => {
           return panelList.filter(p => {
@@ -448,7 +481,7 @@
           try { stopAllTurbineStreams(); } catch(_){}
          });
 
-        return { panelList, panels, visiblePanels, activeSite, setSite, siteDates, applyDate, clearDate, applyPanel, selectTurbine, overviewTurbineRange, rot, turbineData, turbineStatus };
+        return { panelList, panels, visiblePanels, activeSite, setSite, siteDates, applyDate, clearDate, applyPanel, selectTurbine, overviewTurbineRange, rot, turbineData, turbineStatus, turbineRange };
       }
     }).mount('#app');
    </script>
