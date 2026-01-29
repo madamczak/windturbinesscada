@@ -94,6 +94,9 @@
               <strong>Time:</strong> {{ turbineStatus[t] && turbineStatus[t].timestampStart || '—' }}
             </div>
             <div class="small" style="margin-bottom:2px;">
+              <strong>End:</strong> {{ turbineStatus[t] && turbineStatus[t].timestampEnd || '—' }}
+            </div>
+            <div class="small" style="margin-bottom:2px;">
               <strong>Duration:</strong> {{ turbineStatus[t] && turbineStatus[t].duration || '—' }}
             </div>
             <div class="small" style="word-break:break-word;">
@@ -235,7 +238,7 @@
 
           // Initialize data
           turbineData[turbine] = turbineData[turbine] || { nacelle: null, wind: null, ts: null };
-          turbineStatus[turbine] = turbineStatus[turbine] || { timestampStart: null, message: null, duration: null };
+          turbineStatus[turbine] = turbineStatus[turbine] || { timestampStart: null, timestampEnd: null, message: null, duration: null };
 
           es.onmessage = (ev) => {
             try {
@@ -259,11 +262,13 @@
                 const tsKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('timestamp start')) ||
                               Object.keys(rec).find(k => /timestamp|datetime|date|time/i.test(k));
                 const timestampStart = tsKey && rec[tsKey] ? rec[tsKey] : null;
+                const tsEndKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('timestamp end'));
+                const timestampEnd = tsEndKey && rec[tsEndKey] ? rec[tsEndKey] : null;
                 const msgKey = Object.keys(rec).find(k => k && k.toLowerCase() === 'message');
                 const message = msgKey && rec[msgKey] ? rec[msgKey] : null;
                 const durKey = Object.keys(rec).find(k => k && k.toLowerCase() === 'duration');
                 const duration = durKey && rec[durKey] ? rec[durKey] : null;
-                turbineStatus[turbine] = { timestampStart, message, duration };
+                turbineStatus[turbine] = { timestampStart, timestampEnd, message, duration };
               }
             } catch (err) { console.error('combined parse error', turbine, err); }
           };
