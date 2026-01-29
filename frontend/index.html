@@ -147,11 +147,21 @@
           penmanshiel_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false, turbine: null, reconnectTimer: null }
         });
 
-        // All turbines data - reactive objects for each turbine (using combined endpoint)
-        const turbineData = reactive({});  // keys: turbine number -> { nacelle, wind, ts }
-        const turbineStatus = reactive({}); // keys: turbine number -> { timestampStart, timestampEnd, message, duration }
-        const turbineES = {};  // EventSource per turbine
-        const turbineReconnect = {}; // reconnect timers
+        // All turbines data - separate stores for each site (run in background)
+        const kelmarshData = reactive({});  // keys: turbine number -> { nacelle, wind, windSpeed, ts }
+        const kelmarshStatus = reactive({}); // keys: turbine number -> { timestampStart, timestampEnd, message, duration }
+        const penmanshielData = reactive({});
+        const penmanshielStatus = reactive({});
+
+        // Computed references to currently displayed site's data
+        const turbineData = computed(() => activeSite.value === 'kelmarsh' ? kelmarshData : penmanshielData);
+        const turbineStatus = computed(() => activeSite.value === 'kelmarsh' ? kelmarshStatus : penmanshielStatus);
+
+        // EventSources for each site (both run simultaneously)
+        let kelmarshES = null;
+        let kelmarshReconnect = null;
+        let penmanshielES = null;
+        let penmanshielReconnect = null;
 
         // activeSite controls which wind farm is displayed
         const activeSite = ref('kelmarsh');
@@ -173,77 +183,27 @@
           return u;
         }
 
-        function startCombinedStream(turbine, site) {
-          // Close existing stream for this turbine
-          try { if (turbineES[turbine]) turbineES[turbine].close(); } catch(_){}
-          try { if (turbineReconnect[turbine]) clearTimeout(turbineReconnect[turbine]); } catch(_){}
 
-          const endpoint = site === 'kelmarsh'
-            ? '/sse/kelmarsh-combined/' + turbine
-            : '/sse/penmanshiel-combined/' + turbine;
-          const url = buildUrl(endpoint, 1);
-          const es = new EventSource(url.toString());
-          turbineES[turbine] = es;
+        function startSiteStream(site) {
+          const dataStore = site === 'kelmarsh' ? kelmarshData : penmanshielData;
+          const statusStore = site === 'kelmarsh' ? kelmarshStatus : penmanshielStatus;
 
-          // Initialize data
-          turbineData[turbine] = turbineData[turbine] || { nacelle: null, wind: null, ts: null };
-          turbineStatus[turbine] = turbineStatus[turbine] || { timestampStart: null, timestampEnd: null, message: null, duration: null };
+          // Get/set the right ES and reconnect timer
+          let es = site === 'kelmarsh' ? kelmarshES : penmanshielES;
+          let reconnectTimer = site === 'kelmarsh' ? kelmarshReconnect : penmanshielReconnect;
 
-          es.onmessage = (ev) => {
-            try {
-              const obj = JSON.parse(ev.data);
-
-              // Parse data record
-              if (obj && obj.data && obj.data.record) {
-                const rec = obj.data.record;
-                const nacKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('nacelle'));
-                const wdKey = Object.keys(rec).find(k => k && (k.toLowerCase().includes('wind direction') || k.toLowerCase().includes('wind dir')));
-                const nacelle = nacKey ? Math.round(parseFloat(String(rec[nacKey]).replace(/[^0-9.+-eE]/g,''))) : null;
-                const wind = wdKey ? Math.round(parseFloat(String(rec[wdKey]).replace(/[^0-9.+-eE]/g,''))) : null;
-                const tsKey = Object.keys(rec).find(k => /timestamp|datetime|date|time/i.test(k));
-                const ts = tsKey && rec[tsKey] ? Date.parse(rec[tsKey]) : Date.now();
-                turbineData[turbine] = { nacelle, wind, ts };
-              }
-
-              // Parse status record
-              if (obj && obj.status && obj.status.record) {
-                const rec = obj.status.record;
-                const tsKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('timestamp start')) ||
-                              Object.keys(rec).find(k => /timestamp|datetime|date|time/i.test(k));
-                const timestampStart = tsKey && rec[tsKey] ? rec[tsKey] : null;
-                const tsEndKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('timestamp end'));
-                const timestampEnd = tsEndKey && rec[tsEndKey] ? rec[tsEndKey] : null;
-                const msgKey = Object.keys(rec).find(k => k && k.toLowerCase() === 'message');
-                const message = msgKey && rec[msgKey] ? rec[msgKey] : null;
-                const durKey = Object.keys(rec).find(k => k && k.toLowerCase() === 'duration');
-                const duration = durKey && rec[durKey] ? rec[durKey] : null;
-                turbineStatus[turbine] = { timestampStart, timestampEnd, message, duration };
-              }
-            } catch (err) { console.error('combined parse error', turbine, err); }
-          };
-
-          es.onerror = () => {
-            console.error('combined ES error', turbine);
-            const currentSite = activeSite.value;
-            turbineReconnect[turbine] = setTimeout(() => startCombinedStream(turbine, currentSite), 2000);
-          };
-        }
-
-        // Single EventSource for all turbines (avoids browser 6-connection limit)
-        let allTurbinesES = null;
-        let allTurbinesReconnect = null;
-
-        function startAllTurbinesStream() {
-          const site = activeSite.value;
-
-          // Close existing stream
-          try { if (allTurbinesES) allTurbinesES.close(); } catch(_){}
-          try { if (allTurbinesReconnect) clearTimeout(allTurbinesReconnect); } catch(_){}
+          // Close existing stream for this site
+          try { if (es) es.close(); } catch(_){}
+          try { if (reconnectTimer) clearTimeout(reconnectTimer); } catch(_){}
 
           const url = buildUrl('/sse/all-turbines/' + site, 1);
-          allTurbinesES = new EventSource(url.toString());
+          es = new EventSource(url.toString());
 
-          allTurbinesES.onmessage = (ev) => {
+          // Store reference
+          if (site === 'kelmarsh') kelmarshES = es;
+          else penmanshielES = es;
+
+          es.onmessage = (ev) => {
             try {
               const obj = JSON.parse(ev.data);
               if (obj && obj.turbines) {
@@ -261,7 +221,7 @@
                     const windSpeed = wsKey ? parseFloat(String(rec[wsKey]).replace(/[^0-9.+-eE]/g,'')) : null;
                     const tsKey = Object.keys(rec).find(k => /timestamp|datetime|date|time/i.test(k));
                     const ts = tsKey && rec[tsKey] ? Date.parse(rec[tsKey]) : Date.now();
-                    turbineData[turbine] = { nacelle, wind, windSpeed, ts };
+                    dataStore[turbine] = { nacelle, wind, windSpeed, ts };
                   }
 
                   // Parse status record
@@ -276,56 +236,47 @@
                     const message = msgKey && rec[msgKey] ? rec[msgKey] : null;
                     const durKey = Object.keys(rec).find(k => k && k.toLowerCase() === 'duration');
                     const duration = durKey && rec[durKey] ? rec[durKey] : null;
-                    turbineStatus[turbine] = { timestampStart, timestampEnd, message, duration };
+                    statusStore[turbine] = { timestampStart, timestampEnd, message, duration };
                   }
                 }
               }
-            } catch (err) { console.error('all-turbines parse error', err); }
+            } catch (err) { console.error(site + ' stream parse error', err); }
           };
 
-          allTurbinesES.onerror = () => {
-            console.error('all-turbines ES error');
-            const currentSite = activeSite.value;
-            allTurbinesReconnect = setTimeout(() => startAllTurbinesStream(), 2000);
+          es.onerror = () => {
+            console.error(site + ' stream error, reconnecting...');
+            const timer = setTimeout(() => startSiteStream(site), 2000);
+            if (site === 'kelmarsh') kelmarshReconnect = timer;
+            else penmanshielReconnect = timer;
           };
         }
 
-        function stopAllTurbineStreams() {
-          // Stop the single all-turbines stream
-          try { if (allTurbinesES) allTurbinesES.close(); } catch(_){}
-          try { if (allTurbinesReconnect) clearTimeout(allTurbinesReconnect); } catch(_){}
-          allTurbinesES = null;
+        function startAllStreams() {
+          // Start both site streams simultaneously
+          startSiteStream('kelmarsh');
+          startSiteStream('penmanshiel');
+        }
 
-          // Also stop any individual turbine streams (legacy cleanup)
-          for (let t = 1; t <= 15; t++) {
-            try { if (turbineES[t]) turbineES[t].close(); } catch(_){}
-            try { if (turbineReconnect[t]) clearTimeout(turbineReconnect[t]); } catch(_){}
-            delete turbineES[t];
-            delete turbineReconnect[t];
-          }
-          // Clear data
-          for (let t = 1; t <= 15; t++) {
-            delete turbineData[t];
-            delete turbineStatus[t];
-          }
+        function stopAllStreams() {
+          // Stop Kelmarsh stream
+          try { if (kelmarshES) kelmarshES.close(); } catch(_){}
+          try { if (kelmarshReconnect) clearTimeout(kelmarshReconnect); } catch(_){}
+          kelmarshES = null;
+
+          // Stop Penmanshiel stream
+          try { if (penmanshielES) penmanshielES.close(); } catch(_){}
+          try { if (penmanshielReconnect) clearTimeout(penmanshielReconnect); } catch(_){}
+          penmanshielES = null;
         }
 
         function setSite(name) {
           if (name !== 'kelmarsh' && name !== 'penmanshiel') return;
-          if (activeSite.value === name) return; // No change
-
-          // Stop current streams
-          stopAllTurbineStreams();
-
-          // Change site
+          // Just switch the view - streams continue running in background
           activeSite.value = name;
-
-          // Start new stream for the selected site
-          startAllTurbinesStream();
         }
 
-        // Start all turbines stream on init
-        startAllTurbinesStream();
+        // Start both site streams on init
+        startAllStreams();
 
         // per-panel-type selected start dates (YYYY-MM-DD) — null means no filtering
         const siteDates = reactive({ kelmarsh_status: null, penmanshiel_data: null, penmanshiel_status: null });
@@ -469,7 +420,7 @@
          onBeforeUnmount(() => {
            Object.keys(panels).forEach(k => { try { if (panels[k].es) panels[k].es.close(); } catch(_){} });
           // stop all turbine streams
-          try { stopAllTurbineStreams(); } catch(_){}
+          try { stopAllStreams(); } catch(_){}
          });
 
         return { panelList, panels, visiblePanels, activeSite, setSite, siteDates, applyDate, clearDate, applyPanel, selectTurbine, overviewTurbineRange, rot, turbineData, turbineStatus, turbineRange };
