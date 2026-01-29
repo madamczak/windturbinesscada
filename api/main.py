@@ -16,6 +16,7 @@ import asyncio
 import json
 import re
 from typing import AsyncGenerator, Optional
+from datetime import datetime
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import StreamingResponse
@@ -373,13 +374,27 @@ def parse_duration_to_seconds(duration_str: str) -> Optional[float]:
 TIME_COMPRESSION_FACTOR = 600.0
 
 
-async def stream_combined_kelmarsh(turbine: int, request: Request, data_interval: float, max_status_wait: float = 300.0) -> AsyncGenerator[str, None]:
+def parse_timestamp_to_datetime(ts_str: str) -> Optional[datetime]:
+    """Parse a timestamp string to datetime object."""
+    if not ts_str or not isinstance(ts_str, str):
+        return None
+    try:
+        return datetime.strptime(ts_str.strip(), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(ts_str.strip(), "%Y-%m-%d")
+    except ValueError:
+        pass
+    return None
+
+
+async def stream_combined_kelmarsh(turbine: int, request: Request, data_interval: float) -> AsyncGenerator[str, None]:
     """Stream combined data and status for a single Kelmarsh turbine.
 
     - Data updates every data_interval seconds (default 1 second)
-    - Status updates based on the Duration field in the status record,
-      divided by TIME_COMPRESSION_FACTOR (600) to match data time scale
-    - max_status_wait caps status wait time for very long durations
+    - Status updates are synchronized with data timestamps:
+      The next status is shown when the current data timestamp >= status's Timestamp end
     """
     data_db = str(KELMARSH_DATA_BY_TURBINE_DB)
     status_db = str(KELMARSH_STATUS_BY_TURBINE_DB)
@@ -394,16 +409,12 @@ async def stream_combined_kelmarsh(turbine: int, request: Request, data_interval
     except Exception:
         data_ws = 1.0
 
-    try:
-        max_status_ws = max(1.0, float(max_status_wait))
-    except Exception:
-        max_status_ws = 300.0
-
     data_rowid = 0
     status_rowid = 0
 
-    # Track when the next status update should happen
-    status_next_update_time = 0.0  # epoch time when status should next update
+    # Track the current status's end timestamp - when data reaches this time, fetch next status
+    current_status_end_dt: Optional[datetime] = None
+    current_status_record = None
 
     async with aiosqlite.connect(data_db) as data_conn, aiosqlite.connect(status_db) as status_conn:
         # Get column names for both tables
@@ -422,9 +433,28 @@ async def stream_combined_kelmarsh(turbine: int, request: Request, data_interval
             yield sse_encode(json.dumps({"error": "table_not_found", "table": tbl}), event="error")
             return
 
-        import time
-        current_time = time.time()
-        status_next_update_time = current_time  # Allow immediate first status update
+        # Find timestamp column names
+        data_ts_col = next((col for col in data_cols if 'date' in col.lower() or 'time' in col.lower() or 'timestamp' in col.lower()), None)
+        status_end_col = next((col for col in status_cols if 'timestamp end' in col.lower()), None)
+
+        # Fetch the first status record immediately
+        async with status_conn.execute(f"SELECT rowid, * FROM '{tbl}' WHERE rowid > ? ORDER BY rowid ASC LIMIT 1", (status_rowid,)) as cur:
+            row = await cur.fetchone()
+            if row:
+                status_rowid = row[0]
+                values = row[1:]
+                current_status_record = {col: (None if val is None else str(val)) for col, val in zip(status_cols, values)}
+                # Get the end timestamp for this status
+                if status_end_col and current_status_record.get(status_end_col):
+                    current_status_end_dt = parse_timestamp_to_datetime(current_status_record[status_end_col])
+
+        # Send initial status immediately
+        first_payload = {
+            "turbine": turbine,
+            "data": None,
+            "status": {"rowid": status_rowid, "record": current_status_record, "updated": True} if current_status_record else None
+        }
+        yield sse_encode(json.dumps(first_payload, ensure_ascii=False))
 
         while True:
             # Check disconnect
@@ -434,56 +464,53 @@ async def stream_combined_kelmarsh(turbine: int, request: Request, data_interval
             except Exception:
                 pass
 
-            current_time = time.time()
-
-            # Always fetch next data record (every iteration)
+            # Fetch next data record
             data_record = None
+            current_data_dt: Optional[datetime] = None
             async with data_conn.execute(f"SELECT rowid, * FROM '{tbl}' WHERE rowid > ? ORDER BY rowid ASC LIMIT 1", (data_rowid,)) as cur:
                 row = await cur.fetchone()
                 if row:
                     data_rowid = row[0]
                     values = row[1:]
                     data_record = {col: (None if val is None else str(val)) for col, val in zip(data_cols, values)}
+                    # Get the current data timestamp
+                    if data_ts_col and data_record.get(data_ts_col):
+                        current_data_dt = parse_timestamp_to_datetime(data_record[data_ts_col])
 
-            # Only fetch next status record if it's time
-            status_record = None
+            # Check if we should advance to the next status record
+            # This happens when the current data timestamp >= current status's end timestamp
             status_updated = False
-            if current_time >= status_next_update_time:
-                async with status_conn.execute(f"SELECT rowid, * FROM '{tbl}' WHERE rowid > ? ORDER BY rowid ASC LIMIT 1", (status_rowid,)) as cur:
-                    row = await cur.fetchone()
-                    if row:
-                        status_rowid = row[0]
-                        values = row[1:]
-                        status_record = {col: (None if val is None else str(val)) for col, val in zip(status_cols, values)}
-                        status_updated = True
-
-                        # Extract duration and schedule next status update
-                        duration_col = next((col for col in status_cols if col.lower() == 'duration'), None)
-                        duration_seconds = None
-                        if duration_col and status_record.get(duration_col):
-                            duration_seconds = parse_duration_to_seconds(status_record[duration_col])
-
-                        if duration_seconds is not None and duration_seconds > 0:
-                            # Apply time compression factor (600:1) to match data time scale
-                            # e.g., 10 minutes (600s) real time = 1 second stream time
-                            compressed_duration = duration_seconds / TIME_COMPRESSION_FACTOR
-                            # Cap at max_status_wait
-                            wait_time = min(compressed_duration, max_status_ws)
+            if current_data_dt and current_status_end_dt and current_data_dt >= current_status_end_dt:
+                # Fetch next status record(s) until we find one whose end time is > current data time
+                while True:
+                    async with status_conn.execute(f"SELECT rowid, * FROM '{tbl}' WHERE rowid > ? ORDER BY rowid ASC LIMIT 1", (status_rowid,)) as cur:
+                        row = await cur.fetchone()
+                        if row:
+                            status_rowid = row[0]
+                            values = row[1:]
+                            current_status_record = {col: (None if val is None else str(val)) for col, val in zip(status_cols, values)}
+                            status_updated = True
+                            # Get the end timestamp for this status
+                            if status_end_col and current_status_record.get(status_end_col):
+                                current_status_end_dt = parse_timestamp_to_datetime(current_status_record[status_end_col])
+                                # If this status's end time is still <= current data time, continue to next
+                                if current_status_end_dt and current_data_dt >= current_status_end_dt:
+                                    continue  # Fetch next status
+                            break  # Found a status with end time > current data time, or no end time
                         else:
-                            wait_time = data_ws  # fallback to data interval
-
-                        status_next_update_time = current_time + wait_time
+                            # No more status records
+                            current_status_end_dt = None
+                            break
 
             # Send combined payload
-            # Include status info even if not updated (show current status)
             payload = {
                 "turbine": turbine,
                 "data": {"rowid": data_rowid, "record": data_record} if data_record else None,
-                "status": {"rowid": status_rowid, "record": status_record, "updated": status_updated} if status_updated else None
+                "status": {"rowid": status_rowid, "record": current_status_record, "updated": status_updated} if status_updated else None
             }
             yield sse_encode(json.dumps(payload, ensure_ascii=False))
 
-            # Wait for data interval (data updates every data_interval seconds)
+            # Wait for data interval
             await asyncio.sleep(data_ws)
 
             # If data stream exhausted, send end event and break
@@ -495,20 +522,19 @@ async def stream_combined_kelmarsh(turbine: int, request: Request, data_interval
 @app.get("/sse/kelmarsh-combined/{turbine}")
 async def sse_kelmarsh_combined(request: Request,
                                  turbine: int,
-                                 data_interval: float = Query(1.0, ge=0.1, description="Seconds between data updates"),
-                                 max_status_wait: float = Query(300.0, ge=1.0, description="Maximum wait time for status (caps long durations)")):
+                                 data_interval: float = Query(1.0, ge=0.1, description="Seconds between data updates")):
     """Stream combined data and status for a single Kelmarsh turbine.
 
     - Data updates every data_interval seconds (default 1 second)
-    - Status updates based on the Duration field in the status record
-    - max_status_wait caps very long status durations (default 5 minutes)
+    - Status updates are synchronized with data timestamps:
+      The next status is shown when the current data timestamp >= current status's Timestamp end
     """
     if turbine < 1 or turbine > 6:
         return StreamingResponse(
             (sse_encode(json.dumps({"error": "invalid_turbine_range", "min": 1, "max": 6}), event="error") for _ in ()),
             media_type="text/event-stream"
         )
-    gen = stream_combined_kelmarsh(turbine, request, data_interval, max_status_wait)
+    gen = stream_combined_kelmarsh(turbine, request, data_interval)
     return StreamingResponse(gen, media_type="text/event-stream")
 
 
