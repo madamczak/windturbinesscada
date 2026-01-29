@@ -82,7 +82,27 @@
                 <div class="small">Wind: <strong>{{ turbineData[t] && turbineData[t].wind != null ? turbineData[t].wind + '°' : '—' }}</strong></div>
               </div>
             </div>
-            <div class="small" style="text-align:center; margin-top:4px; font-size:10px;">
+
+            <!-- Wind Speed with visual bar -->
+            <div style="margin-top:8px; padding:0 8px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:2px;">
+                <span class="small" style="color:#0369a1;">💨 Speed</span>
+                <span class="small"><strong>{{ turbineData[t] && turbineData[t].windSpeed != null ? turbineData[t].windSpeed.toFixed(1) + ' m/s' : '—' }}</strong></span>
+              </div>
+              <div style="height:8px; background:#e5e7eb; border-radius:4px; overflow:hidden;">
+                <div :style="{
+                  width: (Math.min(Math.max(turbineData[t] && turbineData[t].windSpeed || 0, 0), 25) / 25 * 100) + '%',
+                  height: '100%',
+                  background: (turbineData[t] && turbineData[t].windSpeed != null)
+                    ? (turbineData[t].windSpeed < 5 ? '#22c55e' : turbineData[t].windSpeed < 12 ? '#3b82f6' : turbineData[t].windSpeed < 20 ? '#f59e0b' : '#ef4444')
+                    : '#9ca3af',
+                  transition: 'width 0.3s ease, background 0.3s ease',
+                  borderRadius: '4px'
+                }"></div>
+              </div>
+            </div>
+
+            <div class="small" style="text-align:center; margin-top:6px; font-size:10px;">
               {{ turbineData[t] && turbineData[t].ts ? new Date(turbineData[t].ts).toLocaleString() : '—' }}
             </div>
           </div>
@@ -237,9 +257,11 @@
                     const wdKey = Object.keys(rec).find(k => k && (k.toLowerCase().includes('wind direction') || k.toLowerCase().includes('wind dir')));
                     const nacelle = nacKey ? Math.round(parseFloat(String(rec[nacKey]).replace(/[^0-9.+-eE]/g,''))) : null;
                     const wind = wdKey ? Math.round(parseFloat(String(rec[wdKey]).replace(/[^0-9.+-eE]/g,''))) : null;
+                    const wsKey = Object.keys(rec).find(k => k && (k.toLowerCase().includes('wind speed') || k.toLowerCase() === 'ws'));
+                    const windSpeed = wsKey ? parseFloat(String(rec[wsKey]).replace(/[^0-9.+-eE]/g,'')) : null;
                     const tsKey = Object.keys(rec).find(k => /timestamp|datetime|date|time/i.test(k));
                     const ts = tsKey && rec[tsKey] ? Date.parse(rec[tsKey]) : Date.now();
-                    turbineData[turbine] = { nacelle, wind, ts };
+                    turbineData[turbine] = { nacelle, wind, windSpeed, ts };
                   }
 
                   // Parse status record
