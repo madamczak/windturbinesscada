@@ -348,6 +348,100 @@ async def resolve_rowid(source: str = Query(..., description="One of: penmanshie
         return {"rowid": resolved_rowid}
 
 
+async def stream_combined_kelmarsh(turbine: int, request: Request, wait_seconds: float) -> AsyncGenerator[str, None]:
+    """Stream combined data and status for a single Kelmarsh turbine.
+
+    Each message contains both the latest data record and status record.
+    """
+    data_db = str(KELMARSH_DATA_BY_TURBINE_DB)
+    status_db = str(KELMARSH_STATUS_BY_TURBINE_DB)
+    tbl = f"turbine_{turbine}"
+
+    if not KELMARSH_DATA_BY_TURBINE_DB.exists() or not KELMARSH_STATUS_BY_TURBINE_DB.exists():
+        yield sse_encode(json.dumps({"error": "db_not_found"}), event="error")
+        return
+
+    try:
+        ws = max(0.0, float(wait_seconds))
+    except Exception:
+        ws = 1.0
+
+    data_rowid = 0
+    status_rowid = 0
+
+    async with aiosqlite.connect(data_db) as data_conn, aiosqlite.connect(status_db) as status_conn:
+        # Get column names for both tables
+        data_cols = []
+        status_cols = []
+
+        async with data_conn.execute(f"PRAGMA table_info('{tbl}')") as cur:
+            async for r in cur:
+                data_cols.append(r[1])
+
+        async with status_conn.execute(f"PRAGMA table_info('{tbl}')") as cur:
+            async for r in cur:
+                status_cols.append(r[1])
+
+        if not data_cols or not status_cols:
+            yield sse_encode(json.dumps({"error": "table_not_found", "table": tbl}), event="error")
+            return
+
+        while True:
+            # Check disconnect
+            try:
+                if await request.is_disconnected():
+                    break
+            except Exception:
+                pass
+
+            # Fetch next data record
+            data_record = None
+            async with data_conn.execute(f"SELECT rowid, * FROM '{tbl}' WHERE rowid > ? ORDER BY rowid ASC LIMIT 1", (data_rowid,)) as cur:
+                row = await cur.fetchone()
+                if row:
+                    data_rowid = row[0]
+                    values = row[1:]
+                    data_record = {col: (None if val is None else str(val)) for col, val in zip(data_cols, values)}
+
+            # Fetch next status record
+            status_record = None
+            async with status_conn.execute(f"SELECT rowid, * FROM '{tbl}' WHERE rowid > ? ORDER BY rowid ASC LIMIT 1", (status_rowid,)) as cur:
+                row = await cur.fetchone()
+                if row:
+                    status_rowid = row[0]
+                    values = row[1:]
+                    status_record = {col: (None if val is None else str(val)) for col, val in zip(status_cols, values)}
+
+            # Send combined payload
+            payload = {
+                "turbine": turbine,
+                "data": {"rowid": data_rowid, "record": data_record} if data_record else None,
+                "status": {"rowid": status_rowid, "record": status_record} if status_record else None
+            }
+            yield sse_encode(json.dumps(payload, ensure_ascii=False))
+
+            await asyncio.sleep(ws)
+
+            # If both streams exhausted, send end event and break
+            if data_record is None and status_record is None:
+                yield sse_encode(json.dumps({"info": "end_of_data", "turbine": turbine}), event="end")
+                break
+
+
+@app.get("/sse/kelmarsh-combined/{turbine}")
+async def sse_kelmarsh_combined(request: Request,
+                                 turbine: int,
+                                 wait_seconds: float = Query(1.0, ge=0.0, description="Seconds between records")):
+    """Stream combined data and status for a single Kelmarsh turbine."""
+    if turbine < 1 or turbine > 6:
+        return StreamingResponse(
+            (sse_encode(json.dumps({"error": "invalid_turbine_range", "min": 1, "max": 6}), event="error") for _ in ()),
+            media_type="text/event-stream"
+        )
+    gen = stream_combined_kelmarsh(turbine, request, wait_seconds)
+    return StreamingResponse(gen, media_type="text/event-stream")
+
+
 if __name__ == '__main__':
     # Allow running `python api/main.py` or running the file from PyCharm 'Run'
     try:

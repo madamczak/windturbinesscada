@@ -45,54 +45,68 @@
       <button :class="['toggle-btn', activeSite === 'penmanshiel' ? 'active' : '']" @click="setSite('penmanshiel')">Penmanshiel</button>
     </div>
 
-    <!-- Overview: small turbine grid showing Nacelle and Wind directions for all turbines -->
-    <div id="overview-section" class="overview-section" style="max-width:1200px; margin:10px auto 18px;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <div style="font-weight:700">Turbine Overview ({{ activeSite }})</div>
-        <div>
-          <button class="toggle-btn" :class="{ active: overviewEnabled }" @click="toggleOverview()">Toggle Overview</button>
-        </div>
-      </div>
-      <div v-if="overviewEnabled" id="overview-grid" class="overview-grid" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px">
-        <div v-for="t in overviewTurbineRange" :key="t" :id="'overview-card-' + t" class="card overview-card" style="padding:8px; text-align:center">
-          <div style="font-weight:700; margin-bottom:6px">Turbine {{ t }}</div>
-          <div style="display:flex; gap:10px; justify-content:center; align-items:center; margin:6px 0">
-            <!-- Nacelle SVG -->
-            <div style="text-align:center; width:78px">
-              <svg viewBox="0 0 100 100" width="70" height="70" aria-hidden="true">
-                <circle cx="50" cy="50" r="38" stroke="#e6eef8" fill="#fff" stroke-width="3" />
-                <g :transform="rot(t,'nacelle')">
-                  <line x1="50" y1="50" x2="50" y2="14" stroke="#84cc16" stroke-width="3" stroke-linecap="round" />
-                  <circle cx="50" cy="50" r="3" fill="#84cc16" />
-                </g>
-              </svg>
-              <div class="small">Nac: <strong>{{ overviewData[t] && overviewData[t].nacelle != null ? overviewData[t].nacelle + '°' : '—' }}</strong></div>
-            </div>
+    <!-- All Turbines Data + Status View -->
+    <div id="turbine-view-section" style="max-width:1200px; margin:10px auto 18px;">
+      <div style="font-weight:700; margin-bottom:12px;">Kelmarsh Turbines - Live Data & Status</div>
 
-            <!-- Wind SVG -->
-            <div style="text-align:center; width:78px">
-              <svg viewBox="0 0 100 100" width="70" height="70" aria-hidden="true">
-                <circle cx="50" cy="50" r="38" stroke="#eef6ff" fill="#fff" stroke-width="3" />
-                <g :transform="rot(t,'wind')">
-                  <line x1="50" y1="50" x2="50" y2="10" stroke="#0369a1" stroke-width="3" stroke-linecap="round" />
-                  <circle cx="50" cy="50" r="3" fill="#0369a1" />
-                </g>
-              </svg>
-              <div class="small">Wind: <strong>{{ overviewData[t] && overviewData[t].wind != null ? overviewData[t].wind + '°' : '—' }}</strong></div>
+      <!-- Grid showing all 6 turbines -->
+      <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px;">
+        <div v-for="t in 6" :key="'turbine-'+t" class="card" style="padding:12px;">
+          <h2 style="margin:0 0 10px; font-size:15px; text-align:center; border-bottom:1px solid #e5e7eb; padding-bottom:8px;">Turbine {{ t }}</h2>
+
+          <!-- Data section -->
+          <div style="margin-bottom:10px;">
+            <div style="font-weight:600; font-size:13px; margin-bottom:6px; color:#2563eb;">Data</div>
+            <div style="display:flex; gap:8px; justify-content:center; align-items:center;">
+              <!-- Nacelle SVG -->
+              <div style="text-align:center; width:60px;">
+                <svg viewBox="0 0 100 100" width="50" height="50" aria-hidden="true">
+                  <circle cx="50" cy="50" r="38" stroke="#e6eef8" fill="#fff" stroke-width="3" />
+                  <g :transform="'rotate(' + (turbineData[t] && turbineData[t].nacelle || 0) + ' 50 50)'">
+                    <line x1="50" y1="50" x2="50" y2="14" stroke="#84cc16" stroke-width="3" stroke-linecap="round" />
+                    <circle cx="50" cy="50" r="3" fill="#84cc16" />
+                  </g>
+                </svg>
+                <div class="small">Nac: <strong>{{ turbineData[t] && turbineData[t].nacelle != null ? turbineData[t].nacelle + '°' : '—' }}</strong></div>
+              </div>
+
+              <!-- Wind SVG -->
+              <div style="text-align:center; width:60px;">
+                <svg viewBox="0 0 100 100" width="50" height="50" aria-hidden="true">
+                  <circle cx="50" cy="50" r="38" stroke="#eef6ff" fill="#fff" stroke-width="3" />
+                  <g :transform="'rotate(' + (turbineData[t] && turbineData[t].wind || 0) + ' 50 50)'">
+                    <line x1="50" y1="50" x2="50" y2="10" stroke="#0369a1" stroke-width="3" stroke-linecap="round" />
+                    <circle cx="50" cy="50" r="3" fill="#0369a1" />
+                  </g>
+                </svg>
+                <div class="small">Wind: <strong>{{ turbineData[t] && turbineData[t].wind != null ? turbineData[t].wind + '°' : '—' }}</strong></div>
+              </div>
+            </div>
+            <div class="small" style="text-align:center; margin-top:4px; font-size:10px;">
+              {{ turbineData[t] && turbineData[t].ts ? new Date(turbineData[t].ts).toLocaleString() : '—' }}
             </div>
           </div>
-          <div class="small">TS: <span style="font-size:11px">{{ overviewData[t] && overviewData[t].ts ? new Date(overviewData[t].ts).toLocaleString() : '—' }}</span></div>
+
+          <!-- Status section -->
+          <div style="border-top:1px solid #e5e7eb; padding-top:8px;">
+            <div style="font-weight:600; font-size:13px; margin-bottom:4px; color:#ef4444;">Status</div>
+            <div class="small" style="margin-bottom:2px;">
+              <strong>Time:</strong> {{ turbineStatus[t] && turbineStatus[t].timestampStart || '—' }}
+            </div>
+            <div class="small" style="margin-bottom:2px;">
+              <strong>Duration:</strong> {{ turbineStatus[t] && turbineStatus[t].duration || '—' }}
+            </div>
+            <div class="small" style="word-break:break-word;">
+              <strong>Msg:</strong> {{ turbineStatus[t] && turbineStatus[t].message || '—' }}
+            </div>
+          </div>
         </div>
       </div>
     </div>
 
     <!-- per-site calendar controls: show inputs for data and status separately for the active site -->
-    <div style="display:flex; gap:12px; justify-content:center; margin-bottom:14px; align-items:center">
-      <div v-if="activeSite === 'kelmarsh'" style="display:flex; gap:10px; align-items:center">
-        <label style="font-size:13px">Kelmarsh Status from: <input type="date" v-model="siteDates.kelmarsh_status" @change="applyDate('kelmarsh','status')" /></label>
-        <button class="toggle-btn" @click="clearDate('kelmarsh','status')">Clear</button>
-      </div>
-      <div v-else-if="activeSite === 'penmanshiel'" style="display:flex; gap:10px; align-items:center">
+    <div v-if="activeSite === 'penmanshiel'" style="display:flex; gap:12px; justify-content:center; margin-bottom:14px; align-items:center">
+      <div style="display:flex; gap:10px; align-items:center">
         <label style="font-size:13px">Penmanshiel Data from: <input type="date" v-model="siteDates.penmanshiel_data" @change="applyDate('penmanshiel','data')" /></label>
         <button class="toggle-btn" @click="clearDate('penmanshiel','data')">Clear</button>
         <label style="font-size:13px">Penmanshiel Status from: <input type="date" v-model="siteDates.penmanshiel_status" @change="applyDate('penmanshiel','status')" /></label>
@@ -178,41 +192,6 @@
       </div>
     </div>
 
-    <!-- Status cards (explicit 1..6) duplicated from overview-grid for quick status view -->
-    <div id="status-cards-section" class="status-cards-section" style="max-width:1200px; margin:10px auto 18px;">
-      <div id="status-cards-grid" class="overview-grid" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px">
-        <div v-for="t in 6" :key="'status-'+t" :id="'status-card-' + t" class="card overview-card status-card" style="padding:8px; text-align:center">
-          <div style="font-weight:700; margin-bottom:6px">Turbine {{ t }}</div>
-          <div style="display:flex; gap:10px; justify-content:center; align-items:center; margin:6px 0">
-            <!-- Nacelle SVG (status) -->
-            <div style="text-align:center; width:78px">
-              <svg viewBox="0 0 100 100" width="70" height="70" aria-hidden="true">
-                <circle cx="50" cy="50" r="38" stroke="#e6eef8" fill="#fff" stroke-width="3" />
-                <g :transform="rot(t,'nacelle')">
-                  <line x1="50" y1="50" x2="50" y2="14" stroke="#84cc16" stroke-width="3" stroke-linecap="round" />
-                  <circle cx="50" cy="50" r="3" fill="#84cc16" />
-                </g>
-              </svg>
-              <div class="small">Nac: <strong>{{ overviewData[t] && overviewData[t].nacelle != null ? overviewData[t].nacelle + '°' : '—' }}</strong></div>
-            </div>
-
-            <!-- Wind SVG (status) -->
-            <div style="text-align:center; width:78px">
-              <svg viewBox="0 0 100 100" width="70" height="70" aria-hidden="true">
-                <circle cx="50" cy="50" r="38" stroke="#eef6ff" fill="#fff" stroke-width="3" />
-                <g :transform="rot(t,'wind')">
-                  <line x1="50" y1="50" x2="50" y2="10" stroke="#0369a1" stroke-width="3" stroke-linecap="round" />
-                  <circle cx="50" cy="50" r="3" fill="#0369a1" />
-                </g>
-              </svg>
-              <div class="small">Wind: <strong>{{ overviewData[t] && overviewData[t].wind != null ? overviewData[t].wind + '°' : '—' }}</strong></div>
-            </div>
-          </div>
-          <div class="small">TS: <span style="font-size:11px">{{ overviewData[t] && overviewData[t].ts ? new Date(overviewData[t].ts).toLocaleString() : '—' }}</span></div>
-        </div>
-      </div>
-    </div>
-
   </div> <!-- end #app -->
 
   <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
@@ -223,23 +202,96 @@
     createApp({
       setup() {
         const panelList = [
-          { key: 'kelmarsh_all_status', title: 'Kelmarsh Status', path: '/sse/kelmarsh_all_status', byTurbine: '/sse/by-turbine/kelmarsh_status', minT: 1, maxT: 6 },
           { key: 'penmanshiel_data', title: 'Penmanshiel Data', path: '/sse/next-record', byTurbine: '/sse/by-turbine/penmanshiel_data', minT: 1, maxT: 15 },
           { key: 'penmanshiel_all_status', title: 'Penmanshiel Status', path: '/sse/penmanshiel_all_status', byTurbine: '/sse/by-turbine/penmanshiel_status', minT: 1, maxT: 15 }
         ];
 
         const panels = reactive({
-          kelmarsh_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false, turbine: null, reconnectTimer: null },
           penmanshiel_data: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false, turbine: null, reconnectTimer: null },
           penmanshiel_all_status: { es: null, connected: false, lastRowid: null, display: [], windSpeed: null, windDir: null, nacelleDir: null, waitSeconds: 1, statusValue: null, statusClass: 'badge-default', loading: false, turbine: null, reconnectTimer: null }
         });
 
+        // All turbines data - reactive objects for each turbine (using combined endpoint)
+        const turbineData = reactive({});  // keys: 1-6 -> { nacelle, wind, ts }
+        const turbineStatus = reactive({}); // keys: 1-6 -> { timestampStart, message }
+        const turbineES = {};  // EventSource per turbine
+        const turbineReconnect = {}; // reconnect timers
+
+        function buildUrl(path, waitSeconds) {
+          const base = (location.origin === 'null' ? 'http://127.0.0.1:8000' : location.origin);
+          const u = new URL(path, base);
+          if (waitSeconds !== undefined && waitSeconds !== null) u.searchParams.set('wait_seconds', String(waitSeconds));
+          return u;
+        }
+
+        function startCombinedStream(turbine) {
+          // Close existing stream for this turbine
+          try { if (turbineES[turbine]) turbineES[turbine].close(); } catch(_){}
+          try { if (turbineReconnect[turbine]) clearTimeout(turbineReconnect[turbine]); } catch(_){}
+
+          const url = buildUrl('/sse/kelmarsh-combined/' + turbine, 1);
+          const es = new EventSource(url.toString());
+          turbineES[turbine] = es;
+
+          // Initialize data
+          turbineData[turbine] = turbineData[turbine] || { nacelle: null, wind: null, ts: null };
+          turbineStatus[turbine] = turbineStatus[turbine] || { timestampStart: null, message: null, duration: null };
+
+          es.onmessage = (ev) => {
+            try {
+              const obj = JSON.parse(ev.data);
+
+              // Parse data record
+              if (obj && obj.data && obj.data.record) {
+                const rec = obj.data.record;
+                const nacKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('nacelle'));
+                const wdKey = Object.keys(rec).find(k => k && (k.toLowerCase().includes('wind direction') || k.toLowerCase().includes('wind dir')));
+                const nacelle = nacKey ? Math.round(parseFloat(String(rec[nacKey]).replace(/[^0-9.+-eE]/g,''))) : null;
+                const wind = wdKey ? Math.round(parseFloat(String(rec[wdKey]).replace(/[^0-9.+-eE]/g,''))) : null;
+                const tsKey = Object.keys(rec).find(k => /timestamp|datetime|date|time/i.test(k));
+                const ts = tsKey && rec[tsKey] ? Date.parse(rec[tsKey]) : Date.now();
+                turbineData[turbine] = { nacelle, wind, ts };
+              }
+
+              // Parse status record
+              if (obj && obj.status && obj.status.record) {
+                const rec = obj.status.record;
+                const tsKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('timestamp start')) ||
+                              Object.keys(rec).find(k => /timestamp|datetime|date|time/i.test(k));
+                const timestampStart = tsKey && rec[tsKey] ? rec[tsKey] : null;
+                const msgKey = Object.keys(rec).find(k => k && k.toLowerCase() === 'message');
+                const message = msgKey && rec[msgKey] ? rec[msgKey] : null;
+                const durKey = Object.keys(rec).find(k => k && k.toLowerCase() === 'duration');
+                const duration = durKey && rec[durKey] ? rec[durKey] : null;
+                turbineStatus[turbine] = { timestampStart, message, duration };
+              }
+            } catch (err) { console.error('combined parse error', turbine, err); }
+          };
+
+          es.onerror = () => {
+            console.error('combined ES error', turbine);
+            turbineReconnect[turbine] = setTimeout(() => startCombinedStream(turbine), 2000);
+          };
+        }
+
+        function startAllTurbineStreams() {
+          for (let t = 1; t <= 6; t++) {
+            startCombinedStream(t);
+          }
+        }
+
+        function stopAllTurbineStreams() {
+          for (let t = 1; t <= 6; t++) {
+            try { if (turbineES[t]) turbineES[t].close(); } catch(_){}
+            try { if (turbineReconnect[t]) clearTimeout(turbineReconnect[t]); } catch(_){}
+          }
+        }
+
+        // Start all turbine streams on init
+        startAllTurbineStreams();
+
         // per-panel-type selected start dates (YYYY-MM-DD) — null means no filtering
         const siteDates = reactive({ kelmarsh_status: null, penmanshiel_data: null, penmanshiel_status: null });
-        // track whether we've set the initial date for each panel type from incoming data
-        const siteInitialized = reactive({ kelmarsh_status: false, penmanshiel_data: false, penmanshiel_status: false });
-        // per-panel-type last seen timestamp in ms (used when switching turbines to continue from last time)
-        const lastSeenMs = reactive({ kelmarsh_status: null, penmanshiel_data: null, penmanshiel_status: null });
 
         function formatDateLocalYYYYMMDD(ms) {
           const d = new Date(ms);
@@ -303,8 +355,6 @@
           // only change the active site used for visibility; keep SSE connections running in background
           if (name !== 'kelmarsh' && name !== 'penmanshiel') return;
           activeSite.value = name;
-          // restart overview streams for the newly selected site
-          try { if (overviewEnabled.value) { startOverview(); } } catch(_){}
         }
 
         const visiblePanels = computed(() => {
@@ -315,65 +365,21 @@
           });
         });
 
-        function buildUrl(path, waitSeconds) {
-          const base = (location.origin === 'null' ? 'http://127.0.0.1:8000' : location.origin);
-          const u = new URL(path, base);
-          if (waitSeconds !== undefined && waitSeconds !== null) u.searchParams.set('wait_seconds', String(waitSeconds));
-          return u; // return URL object so callers can append additional params like since_ms
-        }
-
-        // Overview: show nacelle and wind dir for all turbines
-        const overviewEnabled = ref(true);
-        const overviewData = reactive({}); // keys: turbine number -> { nacelle, wind, ts }
-        const overviewES = {}; // active EventSource per turbine
-        const overviewReconnect = {}; // timers
+        // Legacy variables kept for compatibility but not used for Kelmarsh anymore
+        const overviewEnabled = ref(false);
+        const overviewData = reactive({});
+        const overviewES = {};
+        const overviewReconnect = {};
+        const statusData = reactive({});
+        const statusES = {};
+        const statusReconnect = {};
 
         const overviewTurbineRange = computed(() => {
           if (activeSite.value === 'kelmarsh') return Array.from({length: 6}, (_, i) => i+1);
           return Array.from({length: 15}, (_, i) => i+1);
         });
 
-        function toggleOverview() {
-          overviewEnabled.value = !overviewEnabled.value;
-          if (overviewEnabled.value) startOverview(); else stopOverview();
-        }
-
-        function startOverview(){
-          stopOverview();
-          overviewTurbineRange.value.forEach(t => openOverviewForTurbine(t));
-        }
-
-        function stopOverview(){
-          Object.keys(overviewES).forEach(k => {
-            try { overviewES[k].close(); } catch(_){}
-            try { clearTimeout(overviewReconnect[k]); } catch(_){}
-            delete overviewES[k];
-            delete overviewReconnect[k];
-          });
-        }
-
-        // lightweight timestamp parser for overview (avoids referencing other functions)
-        function parseRecordTimestampMs(rec) {
-          if (!rec || typeof rec !== 'object') return null;
-          const keys = Object.keys(rec || {});
-          const candidate = keys.find(k => /timestamp|datetime|date|time|created_at|ts/i.test(k));
-          if (!candidate) return null;
-          const v = rec[candidate];
-          if (v == null) return null;
-          if (typeof v === 'number') {
-            if (v < 1e12) return v * 1000;
-            return v;
-          }
-          try {
-            let s = String(v).trim();
-            const isoLike = /^\d{4}-\d{2}-\d{2}$/;
-            if (isoLike.test(s)) s = s + 'T00:00:00';
-            const ms = Date.parse(s);
-            if (!Number.isNaN(ms)) return ms;
-          } catch (_) {}
-          return null;
-        }
-
+        // rot function for any SVG rotations (kept for compatibility)
         function rot(t, kind) {
           try {
             const v = overviewData[t] && overviewData[t][kind] != null ? Number(overviewData[t][kind]) : 0;
@@ -382,44 +388,6 @@
           } catch (_) { return 'rotate(0 50 50)'; }
         }
 
-        function openOverviewForTurbine(t) {
-          const site = activeSite.value;
-          const basePath = site === 'kelmarsh' ? '/sse/by-turbine/kelmarsh_data/' : '/sse/by-turbine/penmanshiel_data/';
-          const endpoint = basePath + t;
-          const url = buildUrl(endpoint, 1); // 1s wait to avoid tight loops
-          // close existing
-          try { if (overviewES[t]) { overviewES[t].close(); } } catch(_){}
-          try { if (overviewReconnect[t]) { clearTimeout(overviewReconnect[t]); overviewReconnect[t] = null; } } catch(_){}
-          const es = new EventSource(url.toString());
-          overviewES[t] = es;
-          overviewData[t] = overviewData[t] || {nacelle: null, wind: null, ts: null};
-          es.onopen = () => { try { if (overviewReconnect[t]) { clearTimeout(overviewReconnect[t]); overviewReconnect[t] = null; } } catch(_){} };
-          es.onmessage = (ev) => {
-            try {
-              const obj = JSON.parse(ev.data);
-              if (obj && obj.record) {
-                const rec = obj.record;
-                // find nacelle and wind dir keys
-                const nacKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('nacelle'));
-                const wdKey = Object.keys(rec).find(k => k && (k.toLowerCase().includes('wind direction') || k.toLowerCase().includes('wind dir')));
-                const nac = nacKey ? Math.round(parseFloat(String(rec[nacKey]).replace(/[^0-9.+-eE]/g,''))) : null;
-                const wind = wdKey ? Math.round(parseFloat(String(rec[wdKey]).replace(/[^0-9.+-eE]/g,''))) : null;
-                const ts = parseRecordTimestampMs(rec) || Date.now();
-                overviewData[t] = { nacelle: nac, wind: wind, ts: ts };
-              }
-            } catch (err) { console.error('overview parse error', t, err); }
-          };
-          es.onerror = (err) => {
-            console.error('overview ES error', t, err);
-            try { if (overviewReconnect[t]) clearTimeout(overviewReconnect[t]); } catch(_){}
-            overviewReconnect[t] = setTimeout(() => {
-              try { openOverviewForTurbine(t); } catch(_){}
-            }, 2000);
-          };
-        }
-
-        // start overview initially
-        if (overviewEnabled.value) startOverview();
 
         function applyPanel(panelKey, path) {
            // reconnect using the panel's waitSeconds and current turbine selection
@@ -471,14 +439,13 @@
 
          onBeforeUnmount(() => {
            Object.keys(panels).forEach(k => { try { if (panels[k].es) panels[k].es.close(); } catch(_){} });
-          // stop overview EventSources
-          try { stopOverview(); } catch(_){}
+          // stop all turbine streams
+          try { stopAllTurbineStreams(); } catch(_){}
          });
 
-        return { panelList, panels, visiblePanels, activeSite, setSite, siteDates, applyDate, clearDate, applyPanel, selectTurbine, overviewEnabled, toggleOverview, overviewData, overviewTurbineRange, rot };
+        return { panelList, panels, visiblePanels, activeSite, setSite, siteDates, applyDate, clearDate, applyPanel, selectTurbine, overviewTurbineRange, rot, turbineData, turbineStatus };
       }
     }).mount('#app');
    </script>
  </body>
  </html>
-
