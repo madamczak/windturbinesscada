@@ -19,12 +19,15 @@ from typing import AsyncGenerator, Optional
 from datetime import datetime
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 import aiosqlite
 
-# Configuration (existing penmanshiel data)
-BASE_DB_DIR = Path(r"C:\Users\adamc\PycharmProjects\windturbinesscada\data\sqlitedbs")
+# Get the base directory (parent of api folder)
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Configuration (existing penmanshiel data) - relative paths for Docker
+BASE_DB_DIR = BASE_DIR / "data" / "sqlitedbs"
 PENMANSHIEL_DATA_DB = BASE_DB_DIR / "penmanshiel_all_data.db"
 PENMANSHIEL_TABLE = "Penmanshiel_Data"
 DEFAULT_SEND_INTERVAL_SECONDS = 10
@@ -41,7 +44,17 @@ PENMANSHIEL_STATUS_BY_TURBINE_DB = DATA_BY_TURBINE_DIR / "penmanshiel_status_by_
 KELMARSH_DATA_BY_TURBINE_DB = DATA_BY_TURBINE_DIR / "kelmarsh_data_by_turbine.db"
 KELMARSH_STATUS_BY_TURBINE_DB = DATA_BY_TURBINE_DIR / "kelmarsh_status_by_turbine.db"
 
-app = FastAPI(title="SSE multi-source API")
+# Dennis & Ciara storm databases
+DENNIS_CIARA_DIR = BASE_DB_DIR / "dennisciara"
+KELMARSH_DATA_STORMS_DB = DENNIS_CIARA_DIR / "kelmarsh_data_storms.db"
+KELMARSH_STATUS_STORMS_DB = DENNIS_CIARA_DIR / "kelmarsh_status_storms.db"
+PENMANSHIEL_DATA_STORMS_DB = DENNIS_CIARA_DIR / "penmanshiel_data_storms.db"
+PENMANSHIEL_STATUS_STORMS_DB = DENNIS_CIARA_DIR / "penmanshiel_status_storms.db"
+
+# Frontend directory
+FRONTEND_DIR = BASE_DIR / "frontend"
+
+app = FastAPI(title="Storm Dennis & Ciara - Wind Turbine SCADA API")
 
 # allow all origins for convenience during development (adjust in production)
 app.add_middleware(
@@ -50,6 +63,22 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+
+
+# Serve frontend static files
+@app.get("/")
+async def serve_frontend():
+    """Serve the main index.html"""
+    index_path = FRONTEND_DIR / "index.html"
+    if not index_path.exists():
+        return {"error": "index.html not found", "path": str(index_path), "frontend_dir": str(FRONTEND_DIR), "base_dir": str(BASE_DIR)}
+    return FileResponse(index_path)
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Return empty favicon to avoid 404"""
+    return Response(status_code=204)
 
 
 def sse_encode(data: str, event: Optional[str] = None) -> str:
@@ -253,7 +282,7 @@ async def sse_penmanshiel_data_by_turbine(request: Request,
     if turbine < 1 or turbine > 15:
         return StreamingResponse((sse_encode(json.dumps({"error": "invalid_turbine_range", "min": 1, "max": 15}), event="error") for _ in ()), media_type="text/event-stream")
     tbl = f"turbine_{turbine}"
-    gen = stream_table_rows_from_db(PENMANSHIEL_DATA_BY_TURBINE_DB, tbl, request, start_rowid, wait_seconds, since_ms)
+    gen = stream_table_rows_from_db(PENMANSHIEL_DATA_STORMS_DB, tbl, request, start_rowid, wait_seconds, since_ms)
     return StreamingResponse(gen, media_type="text/event-stream")
 
 
@@ -266,7 +295,7 @@ async def sse_penmanshiel_status_by_turbine(request: Request,
     if turbine < 1 or turbine > 15:
         return StreamingResponse((sse_encode(json.dumps({"error": "invalid_turbine_range", "min": 1, "max": 15}), event="error") for _ in ()), media_type="text/event-stream")
     tbl = f"turbine_{turbine}"
-    gen = stream_table_rows_from_db(PENMANSHIEL_STATUS_BY_TURBINE_DB, tbl, request, start_rowid, wait_seconds, since_ms)
+    gen = stream_table_rows_from_db(PENMANSHIEL_STATUS_STORMS_DB, tbl, request, start_rowid, wait_seconds, since_ms)
     return StreamingResponse(gen, media_type="text/event-stream")
 
 
@@ -279,7 +308,7 @@ async def sse_kelmarsh_data_by_turbine(request: Request,
     if turbine < 1 or turbine > 6:
         return StreamingResponse((sse_encode(json.dumps({"error": "invalid_turbine_range", "min": 1, "max": 6}), event="error") for _ in ()), media_type="text/event-stream")
     tbl = f"turbine_{turbine}"
-    gen = stream_table_rows_from_db(KELMARSH_DATA_BY_TURBINE_DB, tbl, request, start_rowid, wait_seconds, since_ms)
+    gen = stream_table_rows_from_db(KELMARSH_DATA_STORMS_DB, tbl, request, start_rowid, wait_seconds, since_ms)
     return StreamingResponse(gen, media_type="text/event-stream")
 
 
@@ -292,7 +321,7 @@ async def sse_kelmarsh_status_by_turbine(request: Request,
     if turbine < 1 or turbine > 6:
         return StreamingResponse((sse_encode(json.dumps({"error": "invalid_turbine_range", "min": 1, "max": 6}), event="error") for _ in ()), media_type="text/event-stream")
     tbl = f"turbine_{turbine}"
-    gen = stream_table_rows_from_db(KELMARSH_STATUS_BY_TURBINE_DB, tbl, request, start_rowid, wait_seconds, since_ms)
+    gen = stream_table_rows_from_db(KELMARSH_STATUS_STORMS_DB, tbl, request, start_rowid, wait_seconds, since_ms)
     return StreamingResponse(gen, media_type="text/event-stream")
 
 
@@ -305,10 +334,10 @@ async def resolve_rowid(source: str = Query(..., description="One of: penmanshie
     """
     # map source to DB path
     src_map = {
-        'penmanshiel_data': PENMANSHIEL_DATA_BY_TURBINE_DB,
-        'penmanshiel_status': PENMANSHIEL_STATUS_BY_TURBINE_DB,
-        'kelmarsh_data': KELMARSH_DATA_BY_TURBINE_DB,
-        'kelmarsh_status': KELMARSH_STATUS_BY_TURBINE_DB,
+        'penmanshiel_data': PENMANSHIEL_DATA_STORMS_DB,
+        'penmanshiel_status': PENMANSHIEL_STATUS_STORMS_DB,
+        'kelmarsh_data': KELMARSH_DATA_STORMS_DB,
+        'kelmarsh_status': KELMARSH_STATUS_STORMS_DB,
     }
     if source not in src_map:
         return {"error": "unknown_source", "source": source}
@@ -396,11 +425,11 @@ async def stream_combined_kelmarsh(turbine: int, request: Request, data_interval
     - Status updates are synchronized with data timestamps:
       The next status is shown when the current data timestamp >= status's Timestamp end
     """
-    data_db = str(KELMARSH_DATA_BY_TURBINE_DB)
-    status_db = str(KELMARSH_STATUS_BY_TURBINE_DB)
+    data_db = str(KELMARSH_DATA_STORMS_DB)
+    status_db = str(KELMARSH_STATUS_STORMS_DB)
     tbl = f"turbine_{turbine}"
 
-    if not KELMARSH_DATA_BY_TURBINE_DB.exists() or not KELMARSH_STATUS_BY_TURBINE_DB.exists():
+    if not KELMARSH_DATA_STORMS_DB.exists() or not KELMARSH_STATUS_STORMS_DB.exists():
         yield sse_encode(json.dumps({"error": "db_not_found"}), event="error")
         return
 
@@ -545,11 +574,11 @@ async def stream_combined_penmanshiel(turbine: int, request: Request, data_inter
     - Status updates are synchronized with data timestamps:
       The next status is shown when the current data timestamp >= status's Timestamp end
     """
-    data_db = str(PENMANSHIEL_DATA_BY_TURBINE_DB)
-    status_db = str(PENMANSHIEL_STATUS_BY_TURBINE_DB)
+    data_db = str(PENMANSHIEL_DATA_STORMS_DB)
+    status_db = str(PENMANSHIEL_STATUS_STORMS_DB)
     tbl = f"turbine_{turbine}"
 
-    if not PENMANSHIEL_DATA_BY_TURBINE_DB.exists() or not PENMANSHIEL_STATUS_BY_TURBINE_DB.exists():
+    if not PENMANSHIEL_DATA_STORMS_DB.exists() or not PENMANSHIEL_STATUS_STORMS_DB.exists():
         yield sse_encode(json.dumps({"error": "db_not_found"}), event="error")
         return
 
@@ -695,12 +724,12 @@ async def stream_all_turbines(site: str, request: Request, data_interval: float)
     Each message contains data for all turbines.
     """
     if site == 'kelmarsh':
-        data_db = str(KELMARSH_DATA_BY_TURBINE_DB)
-        status_db = str(KELMARSH_STATUS_BY_TURBINE_DB)
+        data_db = str(KELMARSH_DATA_STORMS_DB)
+        status_db = str(KELMARSH_STATUS_STORMS_DB)
         turbine_list = [1, 2, 3, 4, 5, 6]
     else:  # penmanshiel
-        data_db = str(PENMANSHIEL_DATA_BY_TURBINE_DB)
-        status_db = str(PENMANSHIEL_STATUS_BY_TURBINE_DB)
+        data_db = str(PENMANSHIEL_DATA_STORMS_DB)
+        status_db = str(PENMANSHIEL_STATUS_STORMS_DB)
         turbine_list = [1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]  # skip 3
 
     try:
@@ -863,6 +892,260 @@ async def sse_all_turbines(request: Request,
         )
     gen = stream_all_turbines(site, request, data_interval)
     return StreamingResponse(gen, media_type="text/event-stream")
+
+
+@app.get("/api/available-dates/{site}")
+async def get_available_dates(site: str):
+    """Get list of dates that have data for a site.
+
+    Returns JSON with min_date, max_date, and array of all available dates.
+    """
+    if site == 'kelmarsh':
+        data_db = KELMARSH_DATA_STORMS_DB
+        date_col = "Date and time"
+    elif site == 'penmanshiel':
+        data_db = PENMANSHIEL_DATA_STORMS_DB
+        date_col = "Date and time"
+    else:
+        return {"error": "invalid_site", "valid": ["kelmarsh", "penmanshiel"]}
+
+    if not data_db.exists():
+        return {"error": "db_not_found"}
+
+    async with aiosqlite.connect(str(data_db)) as conn:
+        # Get first turbine table
+        async with conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'turbine_%' ORDER BY name LIMIT 1") as cur:
+            row = await cur.fetchone()
+            if not row:
+                return {"error": "no_tables"}
+            table = row[0]
+
+        # Get distinct dates
+        async with conn.execute(f"SELECT DISTINCT DATE([{date_col}]) as d FROM [{table}] ORDER BY d") as cur:
+            dates = [row[0] for row in await cur.fetchall()]
+
+        if not dates:
+            return {"error": "no_dates"}
+
+        return {
+            "site": site,
+            "min_date": dates[0],
+            "max_date": dates[-1],
+            "dates": dates,
+            "count": len(dates)
+        }
+
+
+@app.get("/sse/all-turbines/{site}/from/{start_date}")
+async def sse_all_turbines_from_date(request: Request,
+                                      site: str,
+                                      start_date: str,
+                                      data_interval: float = Query(1.0, ge=0.1, description="Seconds between data updates")):
+    """Stream combined data and status for ALL turbines starting from a specific date.
+
+    start_date format: YYYY-MM-DD
+    """
+    if site not in ('kelmarsh', 'penmanshiel'):
+        return StreamingResponse(
+            (sse_encode(json.dumps({"error": "invalid_site", "valid": ["kelmarsh", "penmanshiel"]}), event="error") for _ in ()),
+            media_type="text/event-stream"
+        )
+
+    # Validate date format
+    try:
+        datetime.strptime(start_date, "%Y-%m-%d")
+    except ValueError:
+        return StreamingResponse(
+            (sse_encode(json.dumps({"error": "invalid_date_format", "expected": "YYYY-MM-DD"}), event="error") for _ in ()),
+            media_type="text/event-stream"
+        )
+
+    gen = stream_all_turbines_from_date(site, request, data_interval, start_date)
+    return StreamingResponse(gen, media_type="text/event-stream")
+
+
+async def stream_all_turbines_from_date(site: str, request: Request, data_interval: float, start_date: str) -> AsyncGenerator[str, None]:
+    """Stream combined data and status for ALL turbines of a site starting from a specific date."""
+    if site == 'kelmarsh':
+        data_db = str(KELMARSH_DATA_STORMS_DB)
+        status_db = str(KELMARSH_STATUS_STORMS_DB)
+        turbine_list = [1, 2, 3, 4, 5, 6]
+        date_col = "Date and time"
+    else:  # penmanshiel
+        data_db = str(PENMANSHIEL_DATA_STORMS_DB)
+        status_db = str(PENMANSHIEL_STATUS_STORMS_DB)
+        turbine_list = [1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]  # skip 3
+        date_col = "Date and time"
+
+    try:
+        data_ws = max(0.1, float(data_interval))
+    except Exception:
+        data_ws = 1.0
+
+    # Parse start date to create datetime string for comparison
+    start_datetime = start_date + " 00:00:00"
+
+    # Track state for each turbine
+    turbine_state = {}
+
+    async with aiosqlite.connect(data_db) as data_conn, aiosqlite.connect(status_db) as status_conn:
+        # Initialize state for each turbine
+        for turbine in turbine_list:
+            tbl = f"turbine_{turbine}"
+
+            # Get column names
+            data_cols = []
+            status_cols = []
+
+            try:
+                async with data_conn.execute(f"PRAGMA table_info('{tbl}')") as cur:
+                    async for r in cur:
+                        data_cols.append(r[1])
+            except:
+                pass
+
+            try:
+                async with status_conn.execute(f"PRAGMA table_info('{tbl}')") as cur:
+                    async for r in cur:
+                        status_cols.append(r[1])
+            except:
+                pass
+
+            if not data_cols or not status_cols:
+                continue
+
+            data_ts_col = next((col for col in data_cols if 'date' in col.lower() or 'time' in col.lower() or 'timestamp' in col.lower()), None)
+            status_end_col = next((col for col in status_cols if 'timestamp end' in col.lower()), None)
+            status_start_col = next((col for col in status_cols if 'timestamp start' in col.lower()), None)
+
+            # Find starting rowid for data based on date
+            data_start_rowid = 0
+            if data_ts_col:
+                try:
+                    async with data_conn.execute(f"SELECT rowid FROM '{tbl}' WHERE [{data_ts_col}] >= ? ORDER BY rowid ASC LIMIT 1", (start_datetime,)) as cur:
+                        row = await cur.fetchone()
+                        if row:
+                            data_start_rowid = row[0] - 1  # -1 because we use > in the main loop
+                except:
+                    pass
+
+            # Find starting rowid for status based on date
+            status_start_rowid = 0
+            if status_start_col:
+                try:
+                    async with status_conn.execute(f"SELECT rowid FROM '{tbl}' WHERE [{status_start_col}] >= ? ORDER BY rowid ASC LIMIT 1", (start_datetime,)) as cur:
+                        row = await cur.fetchone()
+                        if row:
+                            status_start_rowid = row[0] - 1
+                except:
+                    pass
+
+            # Fetch first status record from the start date
+            current_status_record = None
+            current_status_end_dt = None
+            status_rowid = status_start_rowid
+
+            try:
+                async with status_conn.execute(f"SELECT rowid, * FROM '{tbl}' WHERE rowid > ? ORDER BY rowid ASC LIMIT 1", (status_rowid,)) as cur:
+                    row = await cur.fetchone()
+                    if row:
+                        status_rowid = row[0]
+                        values = row[1:]
+                        current_status_record = {col: (None if val is None else str(val)) for col, val in zip(status_cols, values)}
+                        if status_end_col and current_status_record.get(status_end_col):
+                            current_status_end_dt = parse_timestamp_to_datetime(current_status_record[status_end_col])
+            except:
+                pass
+
+            turbine_state[turbine] = {
+                'data_cols': data_cols,
+                'status_cols': status_cols,
+                'data_ts_col': data_ts_col,
+                'status_end_col': status_end_col,
+                'data_rowid': data_start_rowid,
+                'status_rowid': status_rowid,
+                'current_status_record': current_status_record,
+                'current_status_end_dt': current_status_end_dt
+            }
+
+        # Send initial status for all turbines
+        initial_payload = {"site": site, "start_date": start_date, "turbines": {}}
+        for turbine, state in turbine_state.items():
+            initial_payload["turbines"][turbine] = {
+                "data": None,
+                "status": {"record": state['current_status_record'], "updated": True} if state['current_status_record'] else None
+            }
+        yield sse_encode(json.dumps(initial_payload, ensure_ascii=False))
+
+        # Main streaming loop (same as stream_all_turbines)
+        while True:
+            try:
+                if await request.is_disconnected():
+                    break
+            except:
+                pass
+
+            all_data_exhausted = True
+            batch_payload = {"site": site, "turbines": {}}
+
+            for turbine, state in turbine_state.items():
+                tbl = f"turbine_{turbine}"
+                data_cols = state['data_cols']
+                status_cols = state['status_cols']
+                data_ts_col = state['data_ts_col']
+                status_end_col = state['status_end_col']
+
+                # Fetch next data record
+                data_record = None
+                current_data_dt = None
+                try:
+                    async with data_conn.execute(f"SELECT rowid, * FROM '{tbl}' WHERE rowid > ? ORDER BY rowid ASC LIMIT 1", (state['data_rowid'],)) as cur:
+                        row = await cur.fetchone()
+                        if row:
+                            state['data_rowid'] = row[0]
+                            values = row[1:]
+                            data_record = {col: (None if val is None else str(val)) for col, val in zip(data_cols, values)}
+                            all_data_exhausted = False
+                            if data_ts_col and data_record.get(data_ts_col):
+                                current_data_dt = parse_timestamp_to_datetime(data_record[data_ts_col])
+                except:
+                    pass
+
+                # Check if we should advance status
+                status_updated = False
+                if current_data_dt and state['current_status_end_dt'] and current_data_dt >= state['current_status_end_dt']:
+                    while True:
+                        try:
+                            async with status_conn.execute(f"SELECT rowid, * FROM '{tbl}' WHERE rowid > ? ORDER BY rowid ASC LIMIT 1", (state['status_rowid'],)) as cur:
+                                row = await cur.fetchone()
+                                if row:
+                                    state['status_rowid'] = row[0]
+                                    values = row[1:]
+                                    state['current_status_record'] = {col: (None if val is None else str(val)) for col, val in zip(status_cols, values)}
+                                    status_updated = True
+                                    if status_end_col and state['current_status_record'].get(status_end_col):
+                                        state['current_status_end_dt'] = parse_timestamp_to_datetime(state['current_status_record'][status_end_col])
+                                        if state['current_status_end_dt'] and current_data_dt >= state['current_status_end_dt']:
+                                            continue
+                                    break
+                                else:
+                                    state['current_status_end_dt'] = None
+                                    break
+                        except:
+                            break
+
+                batch_payload["turbines"][turbine] = {
+                    "data": {"rowid": state['data_rowid'], "record": data_record} if data_record else None,
+                    "status": {"record": state['current_status_record'], "updated": status_updated} if status_updated else None
+                }
+
+            yield sse_encode(json.dumps(batch_payload, ensure_ascii=False))
+
+            if all_data_exhausted:
+                yield sse_encode(json.dumps({"info": "end_of_data", "site": site}), event="end")
+                break
+
+            await asyncio.sleep(data_ws)
 
 
 if __name__ == '__main__':

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Multi SSE Viewer</title>
+  <title>Storm Dennis & Ciara - Wind Turbine SCADA</title>
   <style>
     body { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial; background:#f7fafc; color:#0f172a; padding:20px }
     /* visually indicate disabled turbine buttons */
@@ -37,7 +37,7 @@
   </style>
 </head>
 <body>
-  <h1 style="text-align:center; margin-bottom:18px">SSE Multi-Source Viewer</h1>
+  <h1 style="text-align:center; margin-bottom:18px">🌀 Storm Dennis & Ciara - February 2020</h1>
   <div id="app">
     <!-- site toggle buttons -->
     <div class="toggle-group">
@@ -47,7 +47,29 @@
 
     <!-- All Turbines Data + Status View -->
     <div id="turbine-view-section" style="max-width:1200px; margin:10px auto 18px;">
-      <div style="font-weight:700; margin-bottom:12px;">{{ activeSite === 'kelmarsh' ? 'Kelmarsh' : 'Penmanshiel' }} Turbines - Live Data & Status</div>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:10px;">
+        <div style="font-weight:700;">{{ activeSite === 'kelmarsh' ? 'Kelmarsh' : 'Penmanshiel' }} Wind Farm - Live SCADA Replay</div>
+
+        <!-- Date picker -->
+        <div style="display:flex; align-items:center; gap:8px;">
+          <label style="font-size:13px; display:flex; align-items:center; gap:6px;">
+            Start from:
+            <input type="date"
+                   :value="siteStartDates[activeSite]"
+                   :min="availableDates[activeSite]?.min_date"
+                   :max="availableDates[activeSite]?.max_date"
+                   @change="onDateChange($event)"
+                   style="padding:4px 8px; border:1px solid #e5e7eb; border-radius:4px;" />
+          </label>
+          <button v-if="siteStartDates[activeSite]"
+                  class="toggle-btn"
+                  @click="clearStartDate()"
+                  style="padding:4px 8px; font-size:12px;">
+            Reset
+          </button>
+          <span v-if="dateLoading" class="spinner" style="width:14px; height:14px;"></span>
+        </div>
+      </div>
 
       <!-- Grid showing turbines (6 for Kelmarsh, 15 for Penmanshiel but skip 3) -->
       <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px;">
@@ -157,6 +179,25 @@
         const turbineData = computed(() => activeSite.value === 'kelmarsh' ? kelmarshData : penmanshielData);
         const turbineStatus = computed(() => activeSite.value === 'kelmarsh' ? kelmarshStatus : penmanshielStatus);
 
+        // Date picker state
+        const siteStartDates = reactive({ kelmarsh: null, penmanshiel: null });
+        const availableDates = reactive({ kelmarsh: null, penmanshiel: null });
+        const dateLoading = ref(false);
+
+        // Fetch available dates for both sites on startup
+        async function fetchAvailableDates(site) {
+          try {
+            const base = (location.origin === 'null' ? 'http://127.0.0.1:8000' : location.origin);
+            const response = await fetch(`${base}/api/available-dates/${site}`);
+            const data = await response.json();
+            if (data && data.dates) {
+              availableDates[site] = data;
+            }
+          } catch (err) {
+            console.error('Failed to fetch available dates for', site, err);
+          }
+        }
+
         // EventSources for each site (both run simultaneously)
         let kelmarshES = null;
         let kelmarshReconnect = null;
@@ -187,6 +228,7 @@
         function startSiteStream(site) {
           const dataStore = site === 'kelmarsh' ? kelmarshData : penmanshielData;
           const statusStore = site === 'kelmarsh' ? kelmarshStatus : penmanshielStatus;
+          const startDate = siteStartDates[site];
 
           // Get/set the right ES and reconnect timer
           let es = site === 'kelmarsh' ? kelmarshES : penmanshielES;
@@ -196,7 +238,20 @@
           try { if (es) es.close(); } catch(_){}
           try { if (reconnectTimer) clearTimeout(reconnectTimer); } catch(_){}
 
-          const url = buildUrl('/sse/all-turbines/' + site, 1);
+          // Clear existing data for this site
+          const turbineList = site === 'kelmarsh' ? [1,2,3,4,5,6] : [1,2,4,5,6,7,8,9,10,11,12,13,14,15];
+          for (const t of turbineList) {
+            delete dataStore[t];
+            delete statusStore[t];
+          }
+
+          // Build URL - use date-specific endpoint if start date is set
+          let url;
+          if (startDate) {
+            url = buildUrl('/sse/all-turbines/' + site + '/from/' + startDate, 1);
+          } else {
+            url = buildUrl('/sse/all-turbines/' + site, 1);
+          }
           es = new EventSource(url.toString());
 
           // Store reference
@@ -252,6 +307,10 @@
         }
 
         function startAllStreams() {
+          // Fetch available dates first
+          fetchAvailableDates('kelmarsh');
+          fetchAvailableDates('penmanshiel');
+
           // Start both site streams simultaneously
           startSiteStream('kelmarsh');
           startSiteStream('penmanshiel');
@@ -273,6 +332,40 @@
           if (name !== 'kelmarsh' && name !== 'penmanshiel') return;
           // Just switch the view - streams continue running in background
           activeSite.value = name;
+        }
+
+        function onDateChange(event) {
+          const site = activeSite.value;
+          const newDate = event.target.value;
+
+          if (newDate) {
+            // Validate that date is in available dates
+            const available = availableDates[site];
+            if (available && available.dates && !available.dates.includes(newDate)) {
+              // Find closest available date
+              const closest = available.dates.reduce((prev, curr) => {
+                return Math.abs(new Date(curr) - new Date(newDate)) < Math.abs(new Date(prev) - new Date(newDate)) ? curr : prev;
+              });
+              siteStartDates[site] = closest;
+            } else {
+              siteStartDates[site] = newDate;
+            }
+          } else {
+            siteStartDates[site] = null;
+          }
+
+          dateLoading.value = true;
+          // Restart stream for this site with new date
+          startSiteStream(site);
+          setTimeout(() => { dateLoading.value = false; }, 1000);
+        }
+
+        function clearStartDate() {
+          const site = activeSite.value;
+          siteStartDates[site] = null;
+          dateLoading.value = true;
+          startSiteStream(site);
+          setTimeout(() => { dateLoading.value = false; }, 1000);
         }
 
         // Start both site streams on init
@@ -423,7 +516,7 @@
           try { stopAllStreams(); } catch(_){}
          });
 
-        return { panelList, panels, visiblePanels, activeSite, setSite, siteDates, applyDate, clearDate, applyPanel, selectTurbine, overviewTurbineRange, rot, turbineData, turbineStatus, turbineRange };
+        return { panelList, panels, visiblePanels, activeSite, setSite, siteDates, applyDate, clearDate, applyPanel, selectTurbine, overviewTurbineRange, rot, turbineData, turbineStatus, turbineRange, siteStartDates, availableDates, dateLoading, onDateChange, clearStartDate };
       }
     }).mount('#app');
    </script>

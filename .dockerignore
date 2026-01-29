@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Tests
+tests/
+pytest.ini
+test_*.py
+
+# Scripts (not needed in production)
+scripts/
+
+# Large data files (only include dennisciara for storms)
+data/sqlitedbs/*.db
+data/sqlitedbs/data_by_turbine/
+
+# Logs and temporary files
+*.log
+*.txt
+*.md
+
+# OS files
+.DS_Store
+Thumbs.db
+

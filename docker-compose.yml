@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  windturbine-scada:
+    build: .
+    container_name: storm-dennis-ciara-scada
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
