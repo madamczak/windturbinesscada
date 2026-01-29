@@ -209,16 +209,72 @@
           };
         }
 
-        function startAllTurbineStreams() {
+        // Single EventSource for all turbines (avoids browser 6-connection limit)
+        let allTurbinesES = null;
+        let allTurbinesReconnect = null;
+
+        function startAllTurbinesStream() {
           const site = activeSite.value;
-          const range = site === 'kelmarsh' ? [1,2,3,4,5,6] : [1,2,4,5,6,7,8,9,10,11,12,13,14,15];
-          for (const t of range) {
-            startCombinedStream(t, site);
-          }
+
+          // Close existing stream
+          try { if (allTurbinesES) allTurbinesES.close(); } catch(_){}
+          try { if (allTurbinesReconnect) clearTimeout(allTurbinesReconnect); } catch(_){}
+
+          const url = buildUrl('/sse/all-turbines/' + site, 1);
+          allTurbinesES = new EventSource(url.toString());
+
+          allTurbinesES.onmessage = (ev) => {
+            try {
+              const obj = JSON.parse(ev.data);
+              if (obj && obj.turbines) {
+                for (const [turbineStr, tData] of Object.entries(obj.turbines)) {
+                  const turbine = parseInt(turbineStr);
+
+                  // Parse data record
+                  if (tData && tData.data && tData.data.record) {
+                    const rec = tData.data.record;
+                    const nacKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('nacelle'));
+                    const wdKey = Object.keys(rec).find(k => k && (k.toLowerCase().includes('wind direction') || k.toLowerCase().includes('wind dir')));
+                    const nacelle = nacKey ? Math.round(parseFloat(String(rec[nacKey]).replace(/[^0-9.+-eE]/g,''))) : null;
+                    const wind = wdKey ? Math.round(parseFloat(String(rec[wdKey]).replace(/[^0-9.+-eE]/g,''))) : null;
+                    const tsKey = Object.keys(rec).find(k => /timestamp|datetime|date|time/i.test(k));
+                    const ts = tsKey && rec[tsKey] ? Date.parse(rec[tsKey]) : Date.now();
+                    turbineData[turbine] = { nacelle, wind, ts };
+                  }
+
+                  // Parse status record
+                  if (tData && tData.status && tData.status.record) {
+                    const rec = tData.status.record;
+                    const tsKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('timestamp start')) ||
+                                  Object.keys(rec).find(k => /timestamp|datetime|date|time/i.test(k));
+                    const timestampStart = tsKey && rec[tsKey] ? rec[tsKey] : null;
+                    const tsEndKey = Object.keys(rec).find(k => k && k.toLowerCase().includes('timestamp end'));
+                    const timestampEnd = tsEndKey && rec[tsEndKey] ? rec[tsEndKey] : null;
+                    const msgKey = Object.keys(rec).find(k => k && k.toLowerCase() === 'message');
+                    const message = msgKey && rec[msgKey] ? rec[msgKey] : null;
+                    const durKey = Object.keys(rec).find(k => k && k.toLowerCase() === 'duration');
+                    const duration = durKey && rec[durKey] ? rec[durKey] : null;
+                    turbineStatus[turbine] = { timestampStart, timestampEnd, message, duration };
+                  }
+                }
+              }
+            } catch (err) { console.error('all-turbines parse error', err); }
+          };
+
+          allTurbinesES.onerror = () => {
+            console.error('all-turbines ES error');
+            const currentSite = activeSite.value;
+            allTurbinesReconnect = setTimeout(() => startAllTurbinesStream(), 2000);
+          };
         }
 
         function stopAllTurbineStreams() {
-          // Stop all possible turbines (1-15)
+          // Stop the single all-turbines stream
+          try { if (allTurbinesES) allTurbinesES.close(); } catch(_){}
+          try { if (allTurbinesReconnect) clearTimeout(allTurbinesReconnect); } catch(_){}
+          allTurbinesES = null;
+
+          // Also stop any individual turbine streams (legacy cleanup)
           for (let t = 1; t <= 15; t++) {
             try { if (turbineES[t]) turbineES[t].close(); } catch(_){}
             try { if (turbineReconnect[t]) clearTimeout(turbineReconnect[t]); } catch(_){}
@@ -242,12 +298,12 @@
           // Change site
           activeSite.value = name;
 
-          // Start new streams for the selected site
-          startAllTurbineStreams();
+          // Start new stream for the selected site
+          startAllTurbinesStream();
         }
 
-        // Start all turbine streams on init
-        startAllTurbineStreams();
+        // Start all turbines stream on init
+        startAllTurbinesStream();
 
         // per-panel-type selected start dates (YYYY-MM-DD) — null means no filtering
         const siteDates = reactive({ kelmarsh_status: null, penmanshiel_data: null, penmanshiel_status: null });
